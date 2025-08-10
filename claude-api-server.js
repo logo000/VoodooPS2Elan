@@ -58,46 +58,79 @@ class VoodooPS2LogProcessor {
             return false;
         }
         
-        console.log('🚀 Starting live ETD0180 log capture...');
+        console.log('🚀 Starting live ETD0180 log capture from dmesg...');
         
-        // Start macOS log streaming for ELAN_CALIB messages
-        logProcess = spawn('log', [
-            'stream',
-            '--predicate', 'message CONTAINS "ELAN_CALIB"',
-            '--style', 'compact',
-            '--color', 'never'
-        ]);
+        // Track last processed dmesg line to avoid duplicates
+        this.lastDmesgTimestamp = Date.now();
         
-        logProcess.stdout.on('data', (data) => {
-            const lines = data.toString().split('\n');
-            lines.forEach(line => this.processLogLine(line.trim()));
-        });
-        
-        logProcess.stderr.on('data', (data) => {
-            console.error(`Log capture error: ${data}`);
-        });
-        
-        logProcess.on('close', (code) => {
-            console.log(`📊 Log capture ended with code ${code}`);
-            this.isProcessing = false;
-            calibrationState.capturing = false;
-        });
+        // Poll dmesg every 100ms for ELAN_CALIB messages
+        this.pollInterval = setInterval(() => {
+            this.pollDmesgLogs();
+        }, 100);
         
         this.isProcessing = true;
         calibrationState.capturing = true;
         calibrationState.startTime = new Date().toISOString();
         
+        console.log('✅ Polling dmesg for ELAN_CALIB messages every 100ms');
         return true;
     }
     
     stopCapture() {
-        if (logProcess) {
-            console.log('⏹️  Stopping log capture...');
-            logProcess.kill('SIGTERM');
-            logProcess = null;
+        if (this.pollInterval) {
+            console.log('⏹️  Stopping dmesg log capture...');
+            clearInterval(this.pollInterval);
+            this.pollInterval = null;
         }
         this.isProcessing = false;
         calibrationState.capturing = false;
+    }
+    
+    pollDmesgLogs() {
+        try {
+            const { execSync } = require('child_process');
+            
+            // Get recent dmesg output and filter for ELAN_CALIB
+            const dmesgOutput = execSync('dmesg | grep ELAN_CALIB | tail -20', { 
+                encoding: 'utf8', 
+                timeout: 1000 
+            });
+            
+            if (dmesgOutput && dmesgOutput.trim().length > 0) {
+                const lines = dmesgOutput.trim().split('\n');
+                
+                lines.forEach(line => {
+                    if (line && line.includes('ELAN_CALIB')) {
+                        // Extract timestamp from dmesg format [  123.456789]: message
+                        const timestampMatch = line.match(/^\[\s*(\d+\.\d+)\]:/);
+                        const lineTimestamp = timestampMatch ? parseFloat(timestampMatch[1]) * 1000 : 0;
+                        
+                        // Only process new lines (simple duplicate prevention)
+                        if (!this.processedLines) this.processedLines = new Set();
+                        
+                        const lineKey = line.trim();
+                        if (!this.processedLines.has(lineKey)) {
+                            this.processedLines.add(lineKey);
+                            this.processLogLine(line.trim());
+                            
+                            // Keep set size manageable
+                            if (this.processedLines.size > 500) {
+                                // Clear old entries (simple approach - clear all and rebuild from last 100 logs)
+                                this.processedLines.clear();
+                                calibrationState.logs.slice(-100).forEach(log => 
+                                    this.processedLines.add(log.message)
+                                );
+                            }
+                        }
+                    }
+                });
+            }
+        } catch (error) {
+            // Ignore timeouts and other temporary errors to avoid spam
+            if (!error.message.includes('timeout') && !error.message.includes('No such process')) {
+                console.error('Error polling dmesg:', error.message);
+            }
+        }
     }
     
     processLogLine(line) {
@@ -119,26 +152,32 @@ class VoodooPS2LogProcessor {
     }
     
     classifyLogType(line) {
-        if (line.includes('ETD0180_PACKET')) return 'packet';
+        if (line.includes('FULL_PACKET')) return 'packet';
+        if (line.includes('UNIVERSAL_PACKET')) return 'universal';
         if (line.includes('ETD0180_DELTAS')) return 'delta';
         if (line.includes('ETD0180_STATE')) return 'state';
         if (line.includes('ETD0180_OUTPUT')) return 'output';
         if (line.includes('ETD0180_LIFT')) return 'lift';
+        if (line.includes('PACKET_READY')) return 'ready';
+        if (line.includes('UNIVERSAL_PROCESS')) return 'process';
         if (line.includes('sanity check failed')) return 'error';
         return 'info';
     }
     
     parseETD0180Data(line) {
         try {
-            // Parse packet data
-            if (line.includes('ETD0180_PACKET')) {
+            // Parse FULL_PACKET data  
+            if (line.includes('FULL_PACKET')) {
                 calibrationState.packets.total++;
-                const packetMatch = line.match(/\[0\]=0x([0-9a-f]{2}).*\[1\]=0x([0-9a-f]{2}).*\[2\]=0x([0-9a-f]{2})/i);
+                const packetMatch = line.match(/\[0\]=0x([0-9a-f]{2}).*\[1\]=0x([0-9a-f]{2}).*\[2\]=0x([0-9a-f]{2}).*\[3\]=0x([0-9a-f]{2}).*\[4\]=0x([0-9a-f]{2}).*\[5\]=0x([0-9a-f]{2})/i);
                 if (packetMatch) {
                     calibrationState.realTimeData.lastPacket = {
                         byte0: parseInt(packetMatch[1], 16),
                         byte1: parseInt(packetMatch[2], 16),
                         byte2: parseInt(packetMatch[3], 16),
+                        byte3: parseInt(packetMatch[4], 16),
+                        byte4: parseInt(packetMatch[5], 16),
+                        byte5: parseInt(packetMatch[6], 16),
                         timestamp: Date.now()
                     };
                 }
@@ -166,15 +205,8 @@ class VoodooPS2LogProcessor {
                         calibrationState.packets.buttons++;
                     }
                     
-                    // Update position (simulate integrator)
-                    calibrationState.currentPosition.x += dx * calibrationState.settings.gain;
-                    calibrationState.currentPosition.y += dy * calibrationState.settings.gain;
-                    
-                    // Clamp position
-                    calibrationState.currentPosition.x = Math.max(0, 
-                        Math.min(calibrationState.settings.maxX - 1, calibrationState.currentPosition.x));
-                    calibrationState.currentPosition.y = Math.max(0, 
-                        Math.min(calibrationState.settings.maxY - 1, calibrationState.currentPosition.y));
+                    // DON'T simulate integration - use real kext coordinates from ETD0180_OUTPUT
+                    // This fixes the boundary clamping bug that causes "invisible barriers"
                     
                     // Add to heat map
                     calibrationState.realTimeData.heatMap.push({
@@ -187,6 +219,19 @@ class VoodooPS2LogProcessor {
                     if (calibrationState.realTimeData.heatMap.length > 1000) {
                         calibrationState.realTimeData.heatMap.shift();
                     }
+                }
+            }
+            
+            // Parse integrated coordinates from ETD0180_OUTPUT
+            if (line.includes('ETD0180_OUTPUT')) {
+                const coordMatch = line.match(/integrated=\((\d+),(\d+)\)/);
+                if (coordMatch) {
+                    const realX = parseInt(coordMatch[1]);
+                    const realY = parseInt(coordMatch[2]);
+                    
+                    // Update with real integrated coordinates from kext
+                    calibrationState.currentPosition.x = realX;
+                    calibrationState.currentPosition.y = realY;
                 }
             }
             
