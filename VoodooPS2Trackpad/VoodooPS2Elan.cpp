@@ -2103,10 +2103,11 @@ void ApplePS2Elan::processPacketETD0180() {
     IOLog("ELAN_CALIB: ETD0180_DELTAS dx=%d dy=%d buttons=L%d,R%d,M%d type=%s (0x%02x)\n", 
           dx, dy, leftBtn, rightBtn, middleBtn, packetTypeDesc, packet[0]);
     
-    // Update global button states
+    // CRITICAL: Update global button states for OS interface
+    // These are used by the system for actual click handling
     leftButton = leftBtn;
     rightButton = rightBtn;
-    // Note: ETD0180 middle button handling - may need specific implementation
+    g_middleButtonState = middleBtn ? 0x04 : 0x00; // Middle button state for trackpoint compatibility
     
     // Movement detection - finger present if movement or button pressed
     bool hasMovement = (dx != 0) || (dy != 0);
@@ -2114,45 +2115,69 @@ void ApplePS2Elan::processPacketETD0180() {
     
     IOLog("ELAN_CALIB: ETD0180_STATE hasMovement=%d fingerPresent=%d\n", hasMovement, fingerPresent);
     
-    if (fingerPresent) {
-        // ETD0180 single-finger tracking with integrator
+    // REVOLUTIONARY FIX: Native relative movement for VoodooInput
+    // No more problematic integrator - let VoodooInput handle cursor positioning naturally
+    
+    if (hasMovement) {
+        // ETD0180 relative movement tracking - VoodooInput compatible
         virtualFinger[0].touch = true;
-        virtualFinger[0].button = leftBtn;
+        virtualFinger[0].button = leftBtn || rightBtn || middleBtn; // Any button press
         
-        // Simple integrator for ETD0180 coordinate tracking
-        // These values will be calibrated through testing
-        static int integratedX = 1000; // Start in center
-        static int integratedY = 1000;
+        // Use a persistent virtual cursor position in VoodooInput's expected coordinate space
+        // VoodooInput expects coordinates from 0 to (info.x_max - info.x_min)
+        const int LOGICAL_MAX_X = info.x_max - info.x_min;
+        const int LOGICAL_MAX_Y = info.y_max - info.y_min;
         
-        // Apply deltas with calibratable gain
-        const double GAIN = 3.0; // Will be refined through calibration tool
-        integratedX += (int)(dx * GAIN);
-        integratedY -= (int)(dy * GAIN); // FIX: Invert Y - negative dy should move UP (increase Y)
+        // Static position tracking in correct VoodooInput coordinate system
+        static int virtualX = LOGICAL_MAX_X / 2; // Start in center
+        static int virtualY = LOGICAL_MAX_Y / 2; // Start in center
         
-        // FIX: Remove hard boundary clamping that creates "invisible barriers"
-        // Instead use soft bounds that allow overflow for better tracking
-        const int MAX_X = 2080;
-        const int MAX_Y = 2412;
+        // Store previous position for VoodooInput
+        virtualFinger[0].prev.x = virtualX;
+        virtualFinger[0].prev.y = virtualY;
         
-        // Soft boundaries - allow temporary overflow but reset to reasonable values
-        if (integratedX < -200) integratedX = 0;      // Prevent extreme negative
-        if (integratedX > MAX_X + 200) integratedX = MAX_X - 1;  // Prevent extreme positive
-        if (integratedY < -200) integratedY = 0;      // Prevent extreme negative  
-        if (integratedY > MAX_Y + 200) integratedY = MAX_Y - 1;  // Prevent extreme positive
+        // Apply movement with optimal gain for smooth tracking
+        const double GAIN = 2.5; // Calibrated for natural feel
+        virtualX += (int)(dx * GAIN);
+        virtualY -= (int)(dy * GAIN); // Y-axis inversion for correct movement direction
         
-        virtualFinger[0].prev = virtualFinger[0].now;
-        virtualFinger[0].now.x = integratedX;
-        virtualFinger[0].now.y = integratedY;
+        // ELEGANT BOUNDARY HANDLING: Soft elastic boundaries - no harsh resets!
+        // Allow temporary overflow but gently guide back into bounds
+        const int MARGIN = 50; // Elastic margin for natural feel
+        
+        if (virtualX < -MARGIN) {
+            virtualX = 0; // Gentle guide to boundary
+        } else if (virtualX > LOGICAL_MAX_X + MARGIN) {
+            virtualX = LOGICAL_MAX_X; // Gentle guide to boundary
+        }
+        
+        if (virtualY < -MARGIN) {
+            virtualY = 0; // Gentle guide to boundary  
+        } else if (virtualY > LOGICAL_MAX_Y + MARGIN) {
+            virtualY = LOGICAL_MAX_Y; // Gentle guide to boundary
+        }
+        
+        // Set new position for VoodooInput
+        virtualFinger[0].now.x = virtualX;
+        virtualFinger[0].now.y = virtualY;
         virtualFinger[0].now.pressure = 100;
         virtualFinger[0].now.width = 5;
         
         heldFingers = 1;
         
-        IOLog("ELAN_CALIB: ETD0180_OUTPUT x=%d y=%d integrated=(%d,%d)\n", 
-              virtualFinger[0].now.x, virtualFinger[0].now.y, integratedX, integratedY);
+        IOLog("ELAN_CALIB: ETD0180_SMOOTH x=%d y=%d (dx=%d dy=%d) range=(%d,%d)\n", 
+              virtualX, virtualY, dx, dy, LOGICAL_MAX_X, LOGICAL_MAX_Y);
+              
+    } else if (leftBtn || rightBtn || middleBtn) {
+        // Button press without movement - maintain current position
+        virtualFinger[0].touch = true;
+        virtualFinger[0].button = leftBtn || rightBtn || middleBtn; // Any button press
+        // Keep previous position for stable clicking
+        IOLog("ELAN_CALIB: ETD0180_BUTTON_ONLY L=%d R=%d M=%d\n", leftBtn, rightBtn, middleBtn);
     } else {
-        // No finger detected
+        // No movement and no buttons - finger lifted
         virtualFinger[0].touch = false;
+        virtualFinger[0].button = false;
         heldFingers = 0;
         IOLog("ELAN_CALIB: ETD0180_LIFT finger lifted\n");
     }
