@@ -1423,10 +1423,27 @@ int ApplePS2Elan::elantechPacketCheckV4() {
     unsigned int ic_version;
     bool sanity_check;
 
-    INTERRUPT_LOG("VoodooPS2Elan: Packet dump (%04x, %04x, %04x, %04x, %04x, %04x)\n", packet[0], packet[1], packet[2], packet[3], packet[4], packet[5]);
+    // CALIBRATION: Complete packet logging with timestamp for comprehensive analysis
+    AbsoluteTime timestamp;
+    clock_get_uptime(&timestamp);
+    IOLog("ELAN_CALIB: FULL_PACKET fw=0x%06x [0]=0x%02x [1]=0x%02x [2]=0x%02x [3]=0x%02x [4]=0x%02x [5]=0x%02x\n", 
+          info.fw_version, packet[0], packet[1], packet[2], packet[3], packet[4], packet[5]);
 
     if (info.has_trackpoint && (packet[3] & 0x0f) == 0x06) {
         return PACKET_TRACKPOINT;
+    }
+
+    // ETD0180 special handling - uses relative delta protocol, not V4 multitouch
+    if (info.fw_version == 0x381f17) {
+        IOLog("ELAN_CALIB: ETD0180 detected - using relative delta processing\n");
+        // ETD0180 sanity check: packet[0] has button bits and sync pattern
+        // Based on observed patterns: 0x08, 0x28, etc. - allow common button patterns
+        if ((packet[0] & 0xC0) != 0x00) {
+            IOLog("ELAN_CALIB: ETD0180 sanity check failed: packet[0]=0x%02x (invalid sync bits)\n", packet[0]);
+            return PACKET_UNKNOWN;
+        }
+        IOLog("ELAN_CALIB: ETD0180 packet accepted\n");
+        return PACKET_V4_ETD0180;
     }
 
     // This represents the version of IC body.
@@ -1997,6 +2014,80 @@ void ApplePS2Elan::processPacketMotionV4() {
     sendTouchData();
 }
 
+void ApplePS2Elan::processPacketETD0180() {
+    unsigned char *packet = _ringBuffer.tail();
+    
+    // CALIBRATION: Comprehensive ETD0180 packet analysis
+    IOLog("ELAN_CALIB: ETD0180_PACKET [0]=0x%02x [1]=0x%02x [2]=0x%02x [3]=0x%02x [4]=0x%02x [5]=0x%02x\n",
+          packet[0], packet[1], packet[2], packet[3], packet[4], packet[5]);
+    
+    // Extract relative deltas from packet (ETD0180 uses relative positioning)
+    int dx = (signed char)packet[1];  // signed 8-bit delta X
+    int dy = (signed char)packet[2];  // signed 8-bit delta Y
+    
+    // Extract button states from packet[0] - ETD0180 button encoding
+    bool leftBtn = (packet[0] & 0x01) != 0;
+    bool rightBtn = (packet[0] & 0x02) != 0;
+    bool middleBtn = (packet[0] & 0x04) != 0;
+    
+    IOLog("ELAN_CALIB: ETD0180_DELTAS dx=%d dy=%d buttons=L%d,R%d,M%d\n", 
+          dx, dy, leftBtn, rightBtn, middleBtn);
+    
+    // Update global button states
+    leftButton = leftBtn;
+    rightButton = rightBtn;
+    g_middleButtonState = middleBtn ? 0x04 : 0x00;
+    
+    // Movement detection - finger present if movement or button pressed
+    bool hasMovement = (dx != 0) || (dy != 0);
+    bool fingerPresent = hasMovement || leftBtn || rightBtn || middleBtn;
+    
+    IOLog("ELAN_CALIB: ETD0180_STATE hasMovement=%d fingerPresent=%d\n", hasMovement, fingerPresent);
+    
+    if (fingerPresent) {
+        // ETD0180 single-finger tracking with integrator
+        virtualFinger[0].touch = true;
+        virtualFinger[0].button = leftBtn;
+        
+        // Simple integrator for ETD0180 coordinate tracking
+        // These values will be calibrated through testing
+        static int integratedX = 1000; // Start in center
+        static int integratedY = 1000;
+        
+        // Apply deltas with calibratable gain
+        const double GAIN = 3.0; // Will be refined through calibration tool
+        integratedX += (int)(dx * GAIN);
+        integratedY += (int)(dy * GAIN); // Note: no Y inversion for ETD0180
+        
+        // Clamp to trackpad logical range (will be calibrated)
+        const int MAX_X = 2080; // Based on info.x_max - info.x_min from working system
+        const int MAX_Y = 2412; // Based on info.y_max - info.y_min from working system
+        
+        if (integratedX < 0) integratedX = 0;
+        if (integratedX >= MAX_X) integratedX = MAX_X - 1;
+        if (integratedY < 0) integratedY = 0;
+        if (integratedY >= MAX_Y) integratedY = MAX_Y - 1;
+        
+        virtualFinger[0].prev = virtualFinger[0].now;
+        virtualFinger[0].now.x = integratedX;
+        virtualFinger[0].now.y = integratedY;
+        virtualFinger[0].now.pressure = 100;
+        virtualFinger[0].now.width = 5;
+        
+        heldFingers = 1;
+        
+        IOLog("ELAN_CALIB: ETD0180_OUTPUT x=%d y=%d integrated=(%d,%d)\n", 
+              virtualFinger[0].now.x, virtualFinger[0].now.y, integratedX, integratedY);
+    } else {
+        // No finger detected
+        virtualFinger[0].touch = false;
+        heldFingers = 0;
+        IOLog("ELAN_CALIB: ETD0180_LIFT finger lifted\n");
+    }
+    
+    sendTouchData();
+}
+
 MT2FingerType ApplePS2Elan::GetBestFingerType(int i) {
     switch (i) {
         case 0: return kMT2FingerTypeIndexFinger;
@@ -2214,6 +2305,11 @@ void ApplePS2Elan::packetReady() {
                     case PACKET_TRACKPOINT:
                         INTERRUPT_LOG("VoodooPS2Elan: Handling trackpoint packet\n");
                         elantechReportTrackpoint();
+                        break;
+
+                    case PACKET_V4_ETD0180:
+                        IOLog("ELAN_CALIB: Processing ETD0180 packet with comprehensive logging\n");
+                        processPacketETD0180();
                         break;
 
                     default:
