@@ -144,6 +144,7 @@ ApplePS2Elan *ApplePS2Elan::probe(IOService *provider, SInt32 *score) {
     DEBUG_LOG("VoodooPS2Elan: samples: %x %x %x\n", info.capabilities[0], info.capabilities[1], info.capabilities[2]);
     DEBUG_LOG("VoodooPS2Elan: hw_version: %x\n", info.hw_version);
     DEBUG_LOG("VoodooPS2Elan: fw_version: %x\n", info.fw_version);
+    IOLog("ELAN_CALIB: STARTUP - Detected firmware version: 0x%06x (looking for ETD0180: 0x381f17)\n", info.fw_version);
     DEBUG_LOG("VoodooPS2Elan: x_min: %d\n", info.x_min);
     DEBUG_LOG("VoodooPS2Elan: y_min: %d\n", info.y_min);
     DEBUG_LOG("VoodooPS2Elan: x_max: %d\n", info.x_max);
@@ -2036,7 +2037,7 @@ void ApplePS2Elan::processPacketETD0180() {
     // Update global button states
     leftButton = leftBtn;
     rightButton = rightBtn;
-    g_middleButtonState = middleBtn ? 0x04 : 0x00;
+    // Note: ETD0180 middle button handling - may need specific implementation
     
     // Movement detection - finger present if movement or button pressed
     bool hasMovement = (dx != 0) || (dy != 0);
@@ -2232,6 +2233,7 @@ PS2InterruptResult ApplePS2Elan::interruptOccurred(UInt8 data) {
 
 void ApplePS2Elan::packetReady() {
     INTERRUPT_LOG("VoodooPS2Elan: packet ready occurred\n");
+    IOLog("ELAN_CALIB: PACKET_READY - Ring buffer has %d bytes (%d packet length)\n", _ringBuffer.count(), _packetLength);
     // empty the ring buffer, dispatching each packet...
     while (_ringBuffer.count() >= _packetLength) {
         if (ignoreall) {
