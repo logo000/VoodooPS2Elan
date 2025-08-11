@@ -144,7 +144,6 @@ ApplePS2Elan *ApplePS2Elan::probe(IOService *provider, SInt32 *score) {
     DEBUG_LOG("VoodooPS2Elan: samples: %x %x %x\n", info.capabilities[0], info.capabilities[1], info.capabilities[2]);
     DEBUG_LOG("VoodooPS2Elan: hw_version: %x\n", info.hw_version);
     DEBUG_LOG("VoodooPS2Elan: fw_version: %x\n", info.fw_version);
-    IOLog("ELAN_CALIB: STARTUP - Detected firmware version: 0x%06x - LOGGING ALL ACTIVITY\n", info.fw_version);
     DEBUG_LOG("VoodooPS2Elan: x_min: %d\n", info.x_min);
     DEBUG_LOG("VoodooPS2Elan: y_min: %d\n", info.y_min);
     DEBUG_LOG("VoodooPS2Elan: x_max: %d\n", info.x_max);
@@ -1160,12 +1159,13 @@ int ApplePS2Elan::elantechSetupPS2() {
         return -1;
     }
 
-    /*
+    // Fix for firmware 0x381f17 - restore reg_07 after set_rate commands
+    // This firmware loses absolute mode register after sample rate changes
     if (info.fw_version == 0x381f17) {
-        etd.original_set_rate = psmouse->set_rate;
-        psmouse->set_rate = elantech_set_rate_restore_reg_07;
+        IOLog("VoodooPS2Elan: Applying reg_07 fix for firmware 0x381f17\n");
+        // Note: We need to restore reg_07 after any set_rate command
+        // For now we restore it manually after the commands below
     }
-     */
 
     if (elantechSetInputParams()) {
         DEBUG_LOG("VoodooPS2: failed to query touchpad range.\n");
@@ -1190,6 +1190,15 @@ int ApplePS2Elan::elantechSetupPS2() {
     request.commands[6].inOrOut = kDP_Enable;                          // 0xF4, Enable Data Reporting
     request.commandsCount = 7;
     _device->submitRequestAndBlock(&request);
+    
+    // Restore reg_07 for firmware 0x381f17 after sample rate changes
+    // This firmware bug causes loss of absolute mode after set_rate commands
+    if (info.fw_version == 0x381f17 && info.hw_version == 4) {
+        IOLog("VoodooPS2Elan: Restoring reg_07 (0x01) to maintain absolute mode\n");
+        if (elantechWriteReg(0x07, etd.reg_07)) {
+            DEBUG_LOG("VoodooPS2Elan: Failed to restore reg_07\n");
+        }
+    }
 
     return 0;
 }
@@ -1434,23 +1443,26 @@ int ApplePS2Elan::elantechPacketCheckV4() {
         return PACKET_TRACKPOINT;
     }
 
-    // UNIVERSAL ELAN TRACKPAD LOGGING - Log ALL activity regardless of firmware
-    IOLog("ELAN_CALIB: UNIVERSAL_PACKET fw=0x%06x [0]=0x%02x [1]=0x%02x [2]=0x%02x [3]=0x%02x [4]=0x%02x [5]=0x%02x\n", 
-          info.fw_version, packet[0], packet[1], packet[2], packet[3], packet[4], packet[5]);
-    
-    // UNIVERSAL ELAN HANDLING - Process ANY elan trackpad firmware
-    IOLog("ELAN_CALIB: UNIVERSAL_ELAN fw=0x%06x - processing ALL elan trackpad activity\n", info.fw_version);
-    
-    // Less restrictive sanity check - just log warnings, don't block
-    if ((packet[0] & 0x80) != 0x00) {
-        IOLog("ELAN_CALIB: UNIVERSAL warning: packet[0]=0x%02x has bit 7 set\n", packet[0]);
+    // Special handling for ETD0180 firmware (0x381f17) - less restrictive sanity checks
+    if (info.fw_version == 0x381f17) {
+        // UNIVERSAL ELAN TRACKPAD LOGGING - Log ALL activity regardless of firmware
+        IOLog("ELAN_CALIB: UNIVERSAL_PACKET fw=0x%06x [0]=0x%02x [1]=0x%02x [2]=0x%02x [3]=0x%02x [4]=0x%02x [5]=0x%02x\n", 
+              info.fw_version, packet[0], packet[1], packet[2], packet[3], packet[4], packet[5]);
+        
+        // UNIVERSAL ELAN HANDLING - Process ANY elan trackpad firmware
+        IOLog("ELAN_CALIB: UNIVERSAL_ELAN fw=0x%06x - processing ALL elan trackpad activity\n", info.fw_version);
+        
+        // Less restrictive sanity check - just log warnings, don't block
+        if ((packet[0] & 0x80) != 0x00) {
+            IOLog("ELAN_CALIB: UNIVERSAL warning: packet[0]=0x%02x has bit 7 set\n", packet[0]);
+        }
+        
+        IOLog("ELAN_CALIB: UNIVERSAL packet accepted for processing\n");
+        return PACKET_V4_ETD0180;  // Treat ALL elan trackpads uniformly
     }
-    
-    IOLog("ELAN_CALIB: UNIVERSAL packet accepted for processing\n");
-    return PACKET_V4_ETD0180;  // Treat ALL elan trackpads uniformly
 
-    // This represents the version of IC body (unreachable after return above)
-    // ic_version = (info.fw_version & 0x0f0000) >> 16;
+    // This represents the version of IC body.
+    ic_version = (info.fw_version & 0x0f0000) >> 16;
 
     INTERRUPT_LOG("VoodooPS2Elan: icVersion(%d), crc(%d), samples[1](%d) \n", ic_version, info.crc_enabled, info.samples[1]);
 
@@ -2017,6 +2029,20 @@ void ApplePS2Elan::processPacketMotionV4() {
     sendTouchData();
 }
 
+MT2FingerType ApplePS2Elan::GetBestFingerType(int i) {
+    switch (i) {
+        case 0: return kMT2FingerTypeIndexFinger;
+        case 1: return kMT2FingerTypeMiddleFinger;
+        case 2: return kMT2FingerTypeRingFinger;
+        case 3: return kMT2FingerTypeThumb;
+        case 4: return kMT2FingerTypeLittleFinger;
+
+        default:
+            break;
+    }
+    return kMT2FingerTypeIndexFinger;
+}
+
 void ApplePS2Elan::processPacketETD0180() {
     unsigned char *packet = _ringBuffer.tail();
     
@@ -2107,7 +2133,7 @@ void ApplePS2Elan::processPacketETD0180() {
     // These are used by the system for actual click handling
     leftButton = leftBtn;
     rightButton = rightBtn;
-    g_middleButtonState = middleBtn ? 0x04 : 0x00; // Middle button state for trackpoint compatibility
+    // middleBtn state processed inline (no global state needed)
     
     // Movement detection - finger present if movement or button pressed
     bool hasMovement = (dx != 0) || (dy != 0);
@@ -2129,8 +2155,8 @@ void ApplePS2Elan::processPacketETD0180() {
         const int LOGICAL_MAX_Y = info.y_max - info.y_min;
         
         // Static position tracking in correct VoodooInput coordinate system
-        static int virtualX = LOGICAL_MAX_X / 2; // Start in center
-        static int virtualY = LOGICAL_MAX_Y / 2; // Start in center
+        static int virtualX = 2048; // Start in center
+        static int virtualY = 1536; // Start in center
         
         // Store previous position for VoodooInput
         virtualFinger[0].prev.x = virtualX;
@@ -2183,20 +2209,6 @@ void ApplePS2Elan::processPacketETD0180() {
     }
     
     sendTouchData();
-}
-
-MT2FingerType ApplePS2Elan::GetBestFingerType(int i) {
-    switch (i) {
-        case 0: return kMT2FingerTypeIndexFinger;
-        case 1: return kMT2FingerTypeMiddleFinger;
-        case 2: return kMT2FingerTypeRingFinger;
-        case 3: return kMT2FingerTypeThumb;
-        case 4: return kMT2FingerTypeLittleFinger;
-
-        default:
-            break;
-    }
-    return kMT2FingerTypeIndexFinger;
 }
 
 void ApplePS2Elan::sendTouchData() {
@@ -2329,7 +2341,6 @@ PS2InterruptResult ApplePS2Elan::interruptOccurred(UInt8 data) {
 
 void ApplePS2Elan::packetReady() {
     INTERRUPT_LOG("VoodooPS2Elan: packet ready occurred\n");
-    IOLog("ELAN_CALIB: PACKET_READY - Ring buffer has %d bytes (%d packet length) - FW=0x%06x\n", _ringBuffer.count(), _packetLength, info.fw_version);
     // empty the ring buffer, dispatching each packet...
     while (_ringBuffer.count() >= _packetLength) {
         if (ignoreall) {
