@@ -1956,7 +1956,11 @@ void ApplePS2Elan::elantechReportAbsoluteV3(int packetType) {
 
 void ApplePS2Elan::elantechReportAbsoluteV4(int packetType) {
     if (info.fw_version == 0x381f17) {
+        if (info.fw_version == 0x381f17) {
+        IOLog("[ETD0180_PROCESS] PacketType=%d (5=HEAD 6=MOTION 7=STATUS) selected for processing\n", packetType);
+    } else {
         IOLog("ETD0180_PACKET: type=%d (0=STATUS 1=HEAD 2=MOTION)\n", packetType);
+    }
     }
     
     switch (packetType) {
@@ -2038,11 +2042,29 @@ void ApplePS2Elan::processPacketStatusV4() {
     leftButton = packet[0] & 0x1;
     rightButton = packet[0] & 0x2;
     
-    // DEBUG: Log STATUS packet details for ETD0180
+    // ETD0180 STATUS packet handling
     if (info.fw_version == 0x381f17) {
-        IOLog("ETD0180_STATUS: RAW[0x%02x 0x%02x 0x%02x 0x%02x 0x%02x 0x%02x]\n",
-              packet[0], packet[1], packet[2], packet[3], packet[4], packet[5]);
-        IOLog("ETD0180_STATUS: [1]&0x1f=0x%02x (fingers)\n", (packet[1] & 0x1f));
+        static int status_pkt_num = 0;
+        status_pkt_num++;
+        
+        IOLog("[ETD0180_STATUS_%04d] RAW[0x%02x 0x%02x 0x%02x 0x%02x 0x%02x 0x%02x]\n",
+              status_pkt_num, packet[0], packet[1], packet[2], packet[3], packet[4], packet[5]);
+        
+        int fingerBits = (packet[0] & 0x30) >> 4;
+        fingers = packet[1] & 0x1f;
+        
+        IOLog("[ETD0180_STATUS_%04d] finger_count=%d fingerBits=0x%x\n", 
+              status_pkt_num, fingers, fingerBits);
+        
+        // Clear all fingers on STATUS packet (finger lift)
+        if (fingers == 0) {
+            IOLog("[ETD0180_STATUS_%04d] All fingers lifted - clearing touch state\n", status_pkt_num);
+            for (int i = 0; i < ETP_MAX_FINGERS; i++) {
+                virtualFinger[i].touch = false;
+            }
+            sendTouchData();
+            return;
+        }
     }
 
     // notify finger state change
@@ -2078,35 +2100,89 @@ void ApplePS2Elan::processPacketHeadV4() {
     int id;
     int pres, traces;
 
+    // ETD0180 special HEAD packet handling for Multi-Touch
+    if (info.fw_version == 0x381f17) {
+        static int head_pkt_num = 0;
+        head_pkt_num++;
+        
+        IOLog("[ETD0180_HEAD_%04d] RAW[0x%02x 0x%02x 0x%02x 0x%02x 0x%02x 0x%02x]\n",
+              head_pkt_num, packet[0], packet[1], packet[2], packet[3], packet[4], packet[5]);
+        
+        // ETD0180: HEAD packets are RARE! Usually uses MOTION packets
+        // When HEAD occurs, it's usually single touch
+        int fingerBits = (packet[0] & 0x30) >> 4;
+        
+        // For HEAD packets, always use standard V4 finger ID extraction
+        // HEAD packets don't follow the fbits pattern like MOTION
+        id = ((packet[3] & 0xe0) >> 5) - 1;
+        if (id < 0 || id >= ETP_MAX_FINGERS) {
+            id = 0;  // Default to F0
+        }
+        
+        IOLog("[ETD0180_HEAD_%04d] RARE HEAD packet! id=%d fbits=0x%x\n", 
+              head_pkt_num, id, fingerBits);
+    } else {
+        // Standard V4 processing for non-ETD0180
+        id = ((packet[3] & 0xe0) >> 5) - 1;
+    }
+
     leftButton = packet[0] & 0x1;
     rightButton = packet[0] & 0x2;
-
-    id = ((packet[3] & 0xe0) >> 5) - 1;
     headPacketsCount++;
-
+    
+    // Validate finger ID
     if (id < 0 || id >= ETP_MAX_FINGERS) {
+        if (info.fw_version == 0x381f17) {
+            IOLog("[ETD0180_HEAD_ERROR] Invalid finger ID %d, dropping packet\n", id);
+        }
         return;
+    }
+    
+    if (info.fw_version == 0x381f17) {
+        IOLog("[ETD0180_HEAD_FINGER] Processing for finger F%d\n", id);
     }
 
     int x = ((packet[1] & 0x0f) << 8) | packet[2];
     int y = info.y_max - (((packet[4] & 0x0f) << 8) | packet[5]);
+    
+    // Coordinate extraction debug for ETD0180
+    if (info.fw_version == 0x381f17) {
+        IOLog("[ETD0180_COORDS] Finger %d:\n", id);
+        IOLog("  - X: packet[1]&0x0f=0x%02x << 8 | packet[2]=0x%02x = %d\n",
+              packet[1] & 0x0f, packet[2], x);
+        IOLog("  - Y: packet[4]&0x0f=0x%02x << 8 | packet[5]=0x%02x = %d (inverted=%d)\n",
+              packet[4] & 0x0f, packet[5], ((packet[4] & 0x0f) << 8) | packet[5], y);
+    }
 
     pres = (packet[1] & 0xf0) | ((packet[4] & 0xf0) >> 4);
     traces = (packet[0] & 0xf0) >> 4;
 
+    if (info.fw_version == 0x381f17) {
+        IOLog("[ETD0180_TOUCH] F%d: X=%d Y=%d pres=%d traces=%d btn=%d\n", 
+              id, x, y, pres, traces, packet[0] & 0x3);
+    }
+    
     INTERRUPT_LOG("VoodooPS2Elan: pres: %d, traces: %d, width: %d\n", pres, traces, traces);
 
     virtualFinger[id].button = (packet[0] & 0x3);
     virtualFinger[id].prev = virtualFinger[id].now;
     virtualFinger[id].pressure = pres;
     virtualFinger[id].width = traces;
+    virtualFinger[id].touch = 1;  // Mark finger as active
 
     virtualFinger[id].now.x = x;
     virtualFinger[id].now.y = y;
 
-    if (headPacketsCount == heldFingers) {
-        headPacketsCount = 0;
+    // ETD0180: HEAD packets are rare, send immediately
+    if (info.fw_version == 0x381f17) {
+        IOLog("[ETD0180_HEAD_SEND] Sending HEAD packet data immediately\n");
         sendTouchData();
+    } else {
+        // Standard V4: Wait for all HEAD packets
+        if (headPacketsCount == heldFingers) {
+            headPacketsCount = 0;
+            sendTouchData();
+        }
     }
 }
 
@@ -2118,36 +2194,109 @@ void ApplePS2Elan::processPacketMotionV4() {
         leftButton = packet[0] & 0x1;
         rightButton = packet[0] & 0x2;
         
-        // DEBUG: Log MOTION packet
-        IOLog("ETD0180_MOTION: RAW[0x%02x 0x%02x 0x%02x 0x%02x 0x%02x 0x%02x]\n",
+        // ULTRA DEBUG: Log MOTION packet with bit analysis
+        IOLog("[ETD0180_MOTION_RAW] [0x%02x 0x%02x 0x%02x 0x%02x 0x%02x 0x%02x]\n",
               packet[0], packet[1], packet[2], packet[3], packet[4], packet[5]);
         
-        // Extract absolute coordinates for ETD0180
-        int x = packet[1] | ((packet[3] & 0x0F) << 8);
-        int y = packet[2] | ((packet[4] & 0x0F) << 8);
+        // ETD0180 MOTION packets contain RELATIVE DELTAS (like Linux elantech.c)
+        // Linux: delta_x1 = (signed char)packet[1]; delta_y1 = (signed char)packet[2];
+        signed char delta_x = (signed char)packet[1];
+        signed char delta_y = (signed char)packet[2];
         
-        // Simple finger index from packet[0] bits
+        // Finger detection from packet[0] bits 4-5
         int fingerBits = (packet[0] & 0x30) >> 4;
-        int fingerIndex = 0;
-        if (fingerBits == 2) {
-            fingerIndex = 1;  // Second finger
-        }
+        int traces = (packet[0] & 0xf0) >> 4;  // Number of fingers touching
         
-        IOLog("ETD0180_MOTION: X=%d Y=%d finger=%d (bits=0x%02x)\n", x, y, fingerIndex, fingerBits);
+        IOLog("[ETD0180_MOTION_BITS] packet[0]=0x%02x: fingerBits=0x%x traces=%d buttons=0x%x\n", 
+              packet[0], fingerBits, traces, packet[0] & 0x03);
+        IOLog("[ETD0180_MOTION_DELTAS] delta_X=%d delta_Y=%d (relative movement)\n", delta_x, delta_y);
         
-        // Update finger position with absolute coordinates
-        if (x > 0 && y > 0 && x < info.x_max && y < info.y_max) {
-            virtualFinger[fingerIndex].touch = true;
-            virtualFinger[fingerIndex].prev = virtualFinger[fingerIndex].now;
-            virtualFinger[fingerIndex].now.x = x;
-            virtualFinger[fingerIndex].now.y = info.y_max - y;
-            virtualFinger[fingerIndex].button = (packet[0] & 0x3);
+        // ETD0180 MOTION packets contain RELATIVE DELTAS (Linux process_packet_motion_v4)
+        // fbits pattern: 0x3=F0, 0x2=F1, 0x0/0x1=single
+        if (fingerBits == 0x3) {  // F0 relative movement when multi-touch
+            // Update F0, keep F1 active - ADD deltas to current position
+            virtualFinger[0].touch = true;
+            virtualFinger[0].prev = virtualFinger[0].now;
+            virtualFinger[0].now.x += delta_x;
+            virtualFinger[0].now.y -= delta_y;  // Y inverted like Linux
+            virtualFinger[0].button = (packet[0] & 0x3);
             
-            IOLog("ETD0180_MOTION: Updated finger[%d] to X=%d Y=%d\n", 
-                  fingerIndex, x, (int)(info.y_max - y));
+            IOLog("[ETD0180_MOTION] F0 delta X+=%d Y-=%d -> X=%d Y=%d\n", 
+                  delta_x, delta_y, (int)virtualFinger[0].now.x, (int)virtualFinger[0].now.y);
+            
+        } else if (fingerBits == 0x2) {  // F1 relative movement (second finger)
+            // Update F1, keep F0 active - ADD deltas to current position (Linux style)
+            virtualFinger[1].touch = true;
+            virtualFinger[1].prev = virtualFinger[1].now;
+            virtualFinger[1].now.x += delta_x;
+            virtualFinger[1].now.y -= delta_y;  // Y inverted like Linux
+            virtualFinger[1].button = 0;  // F1 doesn't control buttons
+            
+            IOLog("[ETD0180_MOTION] F1 delta X+=%d Y-=%d -> X=%d Y=%d (second finger, relative)\n", 
+                  delta_x, delta_y, (int)virtualFinger[1].now.x, (int)virtualFinger[1].now.y);
+            
+        } else {  // Single touch or lift (fingerBits 0x0 or 0x1)
+            // Single finger - only F0 active
+            virtualFinger[1].touch = false;  // Clear F1
+            
+            if (traces > 0) {
+                virtualFinger[0].touch = true;
+                virtualFinger[0].prev = virtualFinger[0].now;
+                virtualFinger[0].now.x += delta_x;
+                virtualFinger[0].now.y -= delta_y;  // Y inverted like Linux
+                virtualFinger[0].button = (packet[0] & 0x3);
+                
+                IOLog("[ETD0180_MOTION] F0 single delta X+=%d Y-=%d -> X=%d Y=%d\n", 
+                      delta_x, delta_y, (int)virtualFinger[0].now.x, (int)virtualFinger[0].now.y);
+            } else {
+                virtualFinger[0].touch = false;
+                IOLog("[ETD0180_MOTION] All fingers lifted\n");
+            }
         }
         
-        sendTouchData();
+        // Smart sending for multi-touch to avoid jumps
+        static int lastMotionFingerBits = -1;
+        static int packetsSinceLastSend = 0;
+        packetsSinceLastSend++;
+        
+        bool shouldSend = false;
+        
+        if (fingerBits < 2) {
+            // Single touch - send immediately
+            shouldSend = true;
+            lastMotionFingerBits = -1;
+        } else if (fingerBits == 0x2) {
+            // ETD0180: F1 scrolling (virtual 2-finger average) - send with smoothing
+            shouldSend = true;
+            lastMotionFingerBits = -1;
+            IOLog("[ETD0180_SMOOTH] F1 scrolling detected - sending with coordinates\n");
+        } else if (fingerBits == 0x3 && lastMotionFingerBits == 0x2) {
+            // Got F0 after F1 - both updated, send
+            shouldSend = true;
+            lastMotionFingerBits = -1;
+        } else if (packetsSinceLastSend > 2) {
+            // Failsafe: send if we haven't sent for 3 packets
+            shouldSend = true;
+            lastMotionFingerBits = -1;
+        } else {
+            // Remember this packet and wait for pair
+            lastMotionFingerBits = fingerBits;
+        }
+        
+        if (shouldSend) {
+            packetsSinceLastSend = 0;
+            int activeCount = 0;
+            for (int i = 0; i < 2; i++) {
+                if (virtualFinger[i].touch) {
+                    activeCount++;
+                    IOLog("[ETD0180_SEND] F%d: X=%d Y=%d\n", 
+                          i, (int)virtualFinger[i].now.x, (int)virtualFinger[i].now.y);
+                }
+            }
+            sendTouchData();
+        } else {
+            IOLog("[ETD0180_WAIT] Buffering fbits=0x%x, waiting for pair\n", fingerBits);
+        }
         return;
     }
     
@@ -2555,8 +2704,17 @@ void ApplePS2Elan::packetReady() {
                 // Normal V4 handling
                 {
                     UInt8 *packet = _ringBuffer.tail();
-                    IOLog("VoodooPS2Elan: RAW_PACKET [0x%02x 0x%02x 0x%02x 0x%02x 0x%02x 0x%02x] packet[3]&0x03=%d\n", 
-                          packet[0], packet[1], packet[2], packet[3], packet[4], packet[5], packet[3] & 0x03);
+                    if (info.fw_version == 0x381f17) {
+                        // ULTRA logging for ETD0180
+                        static int irq_cnt = 0;
+                        irq_cnt++;
+                        IOLog("[ETD0180_IRQ_%05d] RAW[0x%02x 0x%02x 0x%02x 0x%02x 0x%02x 0x%02x] type=%d fbits=0x%x\n", 
+                              irq_cnt, packet[0], packet[1], packet[2], packet[3], packet[4], packet[5], 
+                              packet[3] & 0x03, (packet[0] & 0x30) >> 4);
+                    } else {
+                        IOLog("VoodooPS2Elan: RAW_PACKET [0x%02x 0x%02x 0x%02x 0x%02x 0x%02x 0x%02x] packet[3]&0x03=%d\n", 
+                              packet[0], packet[1], packet[2], packet[3], packet[4], packet[5], packet[3] & 0x03);
+                    }
                 }
                 packetType = elantechPacketCheckV4();
                 INTERRUPT_LOG("VoodooPS2Elan: Packet Type %d\n", packetType);
