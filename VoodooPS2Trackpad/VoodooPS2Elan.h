@@ -120,7 +120,6 @@ struct elan_virtual_finger_state {
 #define PACKET_V4_MOTION              0x06
 #define PACKET_V4_STATUS              0x07
 #define PACKET_TRACKPOINT             0x08
-#define PACKET_V4_ETD0180             0x09
 
 /*
  * track up to 5 fingers for v4 hardware
@@ -312,7 +311,7 @@ private:
     int elantechPacketCheckV2();
     int elantechPacketCheckV3();
     int elantechPacketCheckV4();
-    void elantechRescale(unsigned int x, unsigned int y);
+    void elantechRescale(unsigned int &x, unsigned int &y);
     void elantechReportAbsoluteV1();
     void elantechReportAbsoluteV2();
     void elantechReportAbsoluteV3(int packetType);
@@ -322,6 +321,7 @@ private:
     void processPacketHeadV4();
     void processPacketMotionV4();
     void processPacketETD0180();
+    void processPacketETD0180MultiTouch(int packetType);
     void sendTouchData();
     void resetMouse();
     void setTouchPadEnable(bool enable);

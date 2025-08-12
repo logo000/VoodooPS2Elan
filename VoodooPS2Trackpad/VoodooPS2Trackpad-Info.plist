@@ -195,14 +195,6 @@
 					<integer>400</integer>
 					<key>SetHwResolution</key>
 					<true/>
-					<key>TrackpointDividerX</key>
-					<integer>120</integer>
-					<key>TrackpointDividerY</key>
-					<integer>120</integer>
-					<key>TrackpointMultiplierX</key>
-					<integer>120</integer>
-					<key>TrackpointMultiplierY</key>
-					<integer>120</integer>
 					<key>USBMouseStopsTrackpad</key>
 					<integer>0</integer>
 					<key>UseHighRate</key>
@@ -387,10 +379,6 @@
 						<integer>30</integer>
 						<key>HWResetOnStart</key>
 						<true/>
-						<key>TrackpointMultiplierX</key>
-						<integer>2</integer>
-						<key>TrackpointMultiplierY</key>
-						<integer>2</integer>
 						<key>TrackpointScrollMultiplierX</key>
 						<integer>2</integer>
 						<key>TrackpointScrollMultiplierY</key>

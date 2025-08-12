@@ -10,7 +10,7 @@
 
 // generally one cannot IOLog from interrupt context, it eventually leads to kernel panic
 // but it is useful sometimes
-#if 0
+#if 1
 #define INTERRUPT_LOG(args...)  do { IOLog(args); } while (0)
 #else
 #define INTERRUPT_LOG(args...)  do { } while (0)
@@ -24,6 +24,7 @@
 #include <IOKit/usb/IOUSBHostFamily.h>
 #include <IOKit/usb/IOUSBHostHIDDevice.h>
 #include <IOKit/bluetooth/BluetoothAssignedNumbers.h>
+#include <mach/mach_time.h>
 #include "VoodooPS2Controller.h"
 #include "VoodooPS2Elan.h"
 #include "VoodooInputMultitouch/VoodooInputTransducer.h"
@@ -88,6 +89,7 @@ void ApplePS2Elan::injectVersionDependentProperties(OSDictionary *config) {
 }
 
 ApplePS2Elan *ApplePS2Elan::probe(IOService *provider, SInt32 *score) {
+    IOLog("VoodooPS2Elan: [ULTRA DEBUG] probe() entered, score=%d\n", score ? *score : -1);
     DEBUG_LOG("ApplePS2Elan::probe entered...\n");
 
     // The driver has been instructed to verify the presence of the actual
@@ -97,8 +99,10 @@ ApplePS2Elan *ApplePS2Elan::probe(IOService *provider, SInt32 *score) {
     // responses expected by the commands we send it).
 
     if (!super::probe(provider, score)) {
+        IOLog("VoodooPS2Elan: [ULTRA DEBUG] super::probe() FAILED\n");
         return 0;
     }
+    IOLog("VoodooPS2Elan: [ULTRA DEBUG] super::probe() SUCCESS\n");
 
     _device = (ApplePS2MouseDevice*)provider;
 
@@ -126,19 +130,25 @@ ApplePS2Elan *ApplePS2Elan::probe(IOService *provider, SInt32 *score) {
 
     resetMouse();
 
+    IOLog("VoodooPS2Elan: [ULTRA DEBUG] Sending magic knock to detect Elantech\n");
     DEBUG_LOG("VoodooPS2Elan: send magic knock to the device.\n");
     // send magic knock to the device
     if (elantechDetect()) {
+        IOLog("VoodooPS2Elan: [ULTRA DEBUG] elantechDetect() FAILED - not an Elantech device\n");
         DEBUG_LOG("VoodooPS2Elan: elan touchpad not detected\n");
         return NULL;
     }
+    IOLog("VoodooPS2Elan: [ULTRA DEBUG] elantechDetect() SUCCESS - Elantech device confirmed\n");
 
     resetMouse();
 
+    IOLog("VoodooPS2Elan: [ULTRA DEBUG] Querying device info\n");
     if (elantechQueryInfo()) {
+        IOLog("VoodooPS2Elan: [ULTRA DEBUG] elantechQueryInfo() FAILED\n");
         DEBUG_LOG("VoodooPS2Elan: query info failed\n");
         return NULL;
     }
+    IOLog("VoodooPS2Elan: [ULTRA DEBUG] elantechQueryInfo() SUCCESS, fw=0x%06x\n", info.fw_version);
 
     DEBUG_LOG("VoodooPS2Elan: capabilities: %x %x %x\n", info.capabilities[0], info.capabilities[1], info.capabilities[2]);
     DEBUG_LOG("VoodooPS2Elan: samples: %x %x %x\n", info.capabilities[0], info.capabilities[1], info.capabilities[2]);
@@ -163,6 +173,7 @@ ApplePS2Elan *ApplePS2Elan::probe(IOService *provider, SInt32 *score) {
     DEBUG_LOG("VoodooPS2Elan: has_middle_button: %d\n", info.has_middle_button);
 
     DEBUG_LOG("VoodooPS2Elan: elan touchpad detected. Probing finished.\n");
+    IOLog("VoodooPS2Elan: [ULTRA DEBUG] probe() FINISHED SUCCESSFULLY - ApplePS2Elan will be used\n");
 
     _device = nullptr;
 
@@ -235,11 +246,15 @@ bool ApplePS2Elan::start(IOService *provider) {
 
     // Setup workloop with command gate for thread syncronization...
     IOWorkLoop *pWorkLoop = getWorkLoop();
+    IOLog("VoodooPS2Elan: WorkLoop = %p\n", pWorkLoop);
     _cmdGate = IOCommandGate::commandGate(this);
+    IOLog("VoodooPS2Elan: CommandGate = %p\n", _cmdGate);
     if (!pWorkLoop || !_cmdGate) {
+        IOLog("VoodooPS2Elan: FAILED - WorkLoop=%p, CommandGate=%p\n", pWorkLoop, _cmdGate);
         OSSafeReleaseNULL(_device);
         return false;
     }
+    IOLog("VoodooPS2Elan: WorkLoop/CommandGate setup SUCCESS, proceeding to elantechSetupPS2\n");
 
     // Lock the controller during initialization
     _device->lock();
@@ -414,7 +429,14 @@ IOReturn ApplePS2Elan::setProperties(OSObject *props) {
 
 void ApplePS2Elan::setTrackpointProperties()
 {
-    // Trackpoint information for VoodooInput
+    // ELAN Touchpads are pure touchpads, not trackpoint+touchpad hybrids!
+    // Trackpoint properties cause VoodooInput to create unwanted TrackpointDevice.
+    // For ELAN touchpads: NO trackpoint properties = NO TrackpointDevice = ONLY multitouch trackpad
+    IOLog("VoodooPS2Elan: setTrackpointProperties() disabled - ELAN is pure touchpad, not trackpoint hybrid\n");
+    return;
+    
+    /*
+    // DISABLED: Original trackpoint properties code
     OSDictionary *trackpoint = OSDictionary::withCapacity(10);
     if (trackpoint == nullptr)
         return;
@@ -432,6 +454,7 @@ void ApplePS2Elan::setTrackpointProperties()
     
     setProperty(VOODOO_TRACKPOINT_KEY, trackpoint);
     OSSafeReleaseNULL(trackpoint);
+    */
 }
 
 IOReturn ApplePS2Elan::message(UInt32 type, IOService* provider, void* argument) {
@@ -898,6 +921,14 @@ int ApplePS2Elan::elantechQueryInfo() {
         if (elantech_get_resolution_v4(&info.x_res, &info.y_res, &info.bus)) {
             DEBUG_LOG("VoodooPS2Elan: failed to query resolution data.\n");
         }
+        
+        // ETD0180 CURSOR SPEED FIX: DECREASE resolution for FASTER cursor
+        if (info.fw_version == 0x381f17) {  // ETD0180
+            info.x_res = 8;   // Decrease from 15 to 8 for EVEN FASTER cursor
+            info.y_res = 8;   // Decrease from 15 to 8 for EVEN FASTER cursor
+            IOLog("ETD0180_FIX: Decreased resolution to x_res=%d y_res=%d for ULTRA FAST cursor\n", 
+                  info.x_res, info.y_res);
+        }
     }
 
     // query range information
@@ -1150,24 +1181,69 @@ skip_readback_reg_10:
  * Initialize the touchpad
  */
 int ApplePS2Elan::elantechSetupPS2() {
+    IOLog("VoodooPS2Elan: [ULTRA DEBUG] elantechSetupPS2() called!\n");
+    IOLog("VoodooPS2Elan: [ULTRA DEBUG] info.fw_version=0x%06x\n", info.fw_version);
+    
     etd.parity[0] = 1;
     for (int i = 1; i < 256; i++)
         etd.parity[i] = etd.parity[i & (i - 1)] ^ 1;
 
-    if (elantechSetAbsoluteMode()) {
-        DEBUG_LOG("VoodooPS2: failed to put touchpad into absolute mode.\n");
-        return -1;
+    // Special handling for firmware 0x381f17 BEFORE trying absolute mode
+    // This firmware has a bug where reg_07 gets cleared
+    bool needs_reg07_fix = (info.fw_version == 0x381f17);
+    IOLog("VoodooPS2Elan: [ULTRA DEBUG] needs_reg07_fix=%d\n", needs_reg07_fix);
+    if (needs_reg07_fix) {
+        IOLog("VoodooPS2Elan: ETD0180 detected (fw 0x381f17) - applying special handling\n");
+        // Set etd.reg_07 to expected value for absolute mode
+        etd.reg_07 = 0x01;
     }
 
-    // Fix for firmware 0x381f17 - restore reg_07 after set_rate commands
-    // This firmware loses absolute mode register after sample rate changes
+    int absret = elantechSetAbsoluteMode();
+    IOLog("VoodooPS2Elan: [ULTRA DEBUG] elantechSetAbsoluteMode() returned %d\n", absret);
+    if (absret) {
+        if (needs_reg07_fix) {
+            IOLog("VoodooPS2Elan: First absolute mode attempt failed for ETD0180, retrying with reg_07 fix\n");
+            // Try to write reg_07 directly
+            if (elantechWriteReg(0x07, 0x01) == 0) {
+                IOLog("VoodooPS2Elan: Successfully wrote reg_07=0x01, retrying absolute mode\n");
+                if (elantechSetAbsoluteMode() == 0) {
+                    IOLog("VoodooPS2Elan: ETD0180 absolute mode enabled after reg_07 fix!\n");
+                } else {
+                    DEBUG_LOG("VoodooPS2Elan: ETD0180 still failed absolute mode after fix\n");
+                    return -1;
+                }
+            } else {
+                DEBUG_LOG("VoodooPS2Elan: Failed to write reg_07 for ETD0180\n");
+                return -1;
+            }
+        } else {
+            DEBUG_LOG("VoodooPS2: failed to put touchpad into absolute mode.\n");
+            return -1;
+        }
+        } else if (needs_reg07_fix) {
+        IOLog("VoodooPS2Elan: ETD0180 absolute mode set, ensuring reg_07 stays at 0x01\n");
+        elantechWriteReg(0x07, 0x01);
+    }
+
+    // ETD0180 COORDINATE RANGE FIX: Use full hardware capability
     if (info.fw_version == 0x381f17) {
-        IOLog("VoodooPS2Elan: Applying reg_07 fix for firmware 0x381f17\n");
-        // Note: We need to restore reg_07 after any set_rate command
-        // For now we restore it manually after the commands below
+        // ANALYSIS: Live tests showed hardware can do much more:
+        // - Multi-touch Y coordinates reached 3847 (vs. old limit 1150)
+        // - X coordinates were artificially limited by old tight ranges
+        // - Hardware uses 12-bit coordinates: 0-4095 theoretical maximum
+        info.x_min = 0;      // Use full hardware X range
+        info.x_max = 4095;   // 12-bit maximum (2^12-1)
+        info.y_min = 0;      // Use full hardware Y range  
+        info.y_max = 4095;   // 12-bit maximum, validated by multi-touch tests
+
+        IOLog("VoodooPS2Elan: ETD0180 using FULL hardware ranges X=%d-%d, Y=%d-%d (range %d x %d)\n",
+              info.x_min, info.x_max, info.y_min, info.y_max,
+              info.x_max - info.x_min, info.y_max - info.y_min);
     }
 
-    if (elantechSetInputParams()) {
+    int inputret = elantechSetInputParams();
+    IOLog("VoodooPS2Elan: [ULTRA DEBUG] elantechSetInputParams() returned %d\n", inputret);
+    if (inputret) {
         DEBUG_LOG("VoodooPS2: failed to query touchpad range.\n");
         return -1;
     }
@@ -1191,12 +1267,19 @@ int ApplePS2Elan::elantechSetupPS2() {
     request.commandsCount = 7;
     _device->submitRequestAndBlock(&request);
     
-    // Restore reg_07 for firmware 0x381f17 after sample rate changes
-    // This firmware bug causes loss of absolute mode after set_rate commands
-    if (info.fw_version == 0x381f17 && info.hw_version == 4) {
-        IOLog("VoodooPS2Elan: Restoring reg_07 (0x01) to maintain absolute mode\n");
+    // CRITICAL ETD0180 FIX: Restore absolute mode after PS2 initialization
+    // ALL ETD0180 chips lose absolute mode after set_rate/set_resolution commands
+    // This is NOT firmware-specific - it affects the entire ETD0180 series!
+    if (info.fw_version == 0x381f17) {  // ETD0180 detection
+        IOLog("VoodooPS2Elan: CRITICAL - ETD0180 absolute mode restoration required!\n");
+        IOLog("VoodooPS2Elan: PS2 init destroys absolute mode - restoring reg_07=0x%02x\n", etd.reg_07);
+        
         if (elantechWriteReg(0x07, etd.reg_07)) {
-            DEBUG_LOG("VoodooPS2Elan: Failed to restore reg_07\n");
+            IOLog("VoodooPS2Elan: ERROR - FAILED to restore reg_07! Trackpad in RELATIVE mode!\n");
+            IOLog("VoodooPS2Elan: This explains small coordinate ranges - no absolute positioning!\n");
+        } else {
+            IOLog("VoodooPS2Elan: SUCCESS - reg_07 restored! Absolute mode should now be active!\n");
+            IOLog("VoodooPS2Elan: Expecting full coordinate range: X=1014-3094, Y=1014-3096\n");
         }
     }
 
@@ -1427,15 +1510,58 @@ int ApplePS2Elan::elantechPacketCheckV3() {
     return PACKET_UNKNOWN;
 }
 
+void ApplePS2Elan::elantechRescale(unsigned int &x, unsigned int &y) {
+    bool needs_update = false;
+
+    if (x > info.x_max) {
+        info.x_max = x;
+        needs_update = true;
+    }
+    if (x < info.x_min) {
+        info.x_min = x;
+        needs_update = true;
+    }
+
+    if (y > info.y_max) {
+        info.y_max = y;
+        needs_update = true;
+    }
+    if (y < info.y_min) {
+        info.y_min = y;
+        needs_update = true;
+    }
+
+    if (needs_update) {
+        setProperty(VOODOO_INPUT_LOGICAL_MAX_X_KEY, info.x_max - info.x_min, 32);
+        setProperty(VOODOO_INPUT_LOGICAL_MAX_Y_KEY, info.y_max - info.y_min, 32);
+
+        setProperty(VOODOO_INPUT_PHYSICAL_MAX_X_KEY, (info.x_max - info.x_min + 1) * 100 / info.x_res, 32);
+        setProperty(VOODOO_INPUT_PHYSICAL_MAX_Y_KEY, (info.y_max - info.y_min + 1) * 100 / info.y_res, 32);
+
+        if (voodooInputInstance) {
+            VoodooInputDimensions dims = {
+                .min_x = static_cast<SInt32>(info.x_min),
+                .max_x = static_cast<SInt32>(info.x_max),
+                .min_y = static_cast<SInt32>(info.y_min),
+                .max_y = static_cast<SInt32>(info.y_max)
+            };
+            super::messageClient(kIOMessageVoodooInputUpdateDimensionsMessage, voodooInputInstance, &dims, sizeof(VoodooInputDimensions));
+        }
+
+        IOLog("VoodooPS2Elan: rescaled logical range to %dx%d, physical %dx%d\n",
+            info.x_max - info.x_min, info.y_max - info.y_min,
+            (info.x_max - info.x_min + 1) * 100 / info.x_res,
+            (info.y_max - info.y_min + 1) * 100 / info.y_res);
+    }
+}
+
 int ApplePS2Elan::elantechPacketCheckV4() {
     unsigned char *packet = _ringBuffer.tail();
     unsigned char packet_type = packet[3] & 0x03;
     unsigned int ic_version;
     bool sanity_check;
 
-    // CALIBRATION: Complete packet logging with timestamp for comprehensive analysis
-    AbsoluteTime timestamp;
-    clock_get_uptime(&timestamp);
+    // CALIBRATION: Complete packet logging for comprehensive analysis
     IOLog("ELAN_CALIB: FULL_PACKET fw=0x%06x [0]=0x%02x [1]=0x%02x [2]=0x%02x [3]=0x%02x [4]=0x%02x [5]=0x%02x\n", 
           info.fw_version, packet[0], packet[1], packet[2], packet[3], packet[4], packet[5]);
 
@@ -1443,22 +1569,30 @@ int ApplePS2Elan::elantechPacketCheckV4() {
         return PACKET_TRACKPOINT;
     }
 
-    // Special handling for ETD0180 firmware (0x381f17) - less restrictive sanity checks
+    // ETD0180 debug logging but treat as normal V4 hardware
     if (info.fw_version == 0x381f17) {
-        // UNIVERSAL ELAN TRACKPAD LOGGING - Log ALL activity regardless of firmware
-        IOLog("ELAN_CALIB: UNIVERSAL_PACKET fw=0x%06x [0]=0x%02x [1]=0x%02x [2]=0x%02x [3]=0x%02x [4]=0x%02x [5]=0x%02x\n", 
-              info.fw_version, packet[0], packet[1], packet[2], packet[3], packet[4], packet[5]);
+        IOLog("ETD0180_PACKET_CHECK: RAW[0x%02x 0x%02x 0x%02x 0x%02x 0x%02x 0x%02x]\n", 
+              packet[0], packet[1], packet[2], packet[3], packet[4], packet[5]);
+        IOLog("ETD0180_PACKET_TYPE: [3]&0x03=%d (0=STATUS 1=HEAD 2=MOTION)\n", packet_type);
+        IOLog("ETD0180_PACKET_BITS: [3]&0x1c=0x%02x (should be 0x10) [0]&0x08=0x%02x [0]&0x30=0x%02x [0]&0xe0=0x%02x\n",
+              (packet[3] & 0x1c), (packet[0] & 0x08), (packet[0] & 0x30), (packet[0] & 0xe0));
         
-        // UNIVERSAL ELAN HANDLING - Process ANY elan trackpad firmware
-        IOLog("ELAN_CALIB: UNIVERSAL_ELAN fw=0x%06x - processing ALL elan trackpad activity\n", info.fw_version);
-        
-        // Less restrictive sanity check - just log warnings, don't block
-        if ((packet[0] & 0x80) != 0x00) {
-            IOLog("ELAN_CALIB: UNIVERSAL warning: packet[0]=0x%02x has bit 7 set\n", packet[0]);
+        // Check all possible multi-touch indicators
+        if (packet_type == 0) {
+            IOLog("ETD0180_PACKET: STATUS packet detected\n");
+        } else if (packet_type == 1) {
+            IOLog("ETD0180_PACKET: HEAD packet detected! (RARE for ETD0180)\n");
+        } else if (packet_type == 2) {
+            IOLog("ETD0180_PACKET: MOTION packet detected\n");
+            // Check if this might be a multi-touch MOTION packet
+            if ((packet[0] & 0x30) == 0x20) {
+                IOLog("ETD0180_PACKET: Possible SECOND finger MOTION\n");
+            } else if ((packet[0] & 0x30) == 0x10) {
+                IOLog("ETD0180_PACKET: Possible FIRST finger MOTION\n");
+            } else if ((packet[0] & 0x30) == 0x30) {
+                IOLog("ETD0180_PACKET: Possible DUAL finger MOTION\n");
+            }
         }
-        
-        IOLog("ELAN_CALIB: UNIVERSAL packet accepted for processing\n");
-        return PACKET_V4_ETD0180;  // Treat ALL elan trackpads uniformly
     }
 
     // This represents the version of IC body.
@@ -1497,36 +1631,6 @@ int ApplePS2Elan::elantechPacketCheckV4() {
     return PACKET_UNKNOWN;
 }
 
-void ApplePS2Elan::elantechRescale(unsigned int x, unsigned int y) {
-    bool needs_update = false;
-
-    if (x > info.x_max) {
-        info.x_max = x;
-        needs_update = true;
-    }
-
-    if (y > info.y_max) {
-        info.y_max = y;
-        needs_update = true;
-    }
-
-    if (needs_update) {
-        setProperty(VOODOO_INPUT_LOGICAL_MAX_X_KEY, info.x_max - info.x_min, 32);
-        setProperty(VOODOO_INPUT_LOGICAL_MAX_Y_KEY, info.y_max - info.y_min, 32);
-
-        setProperty(VOODOO_INPUT_PHYSICAL_MAX_X_KEY, (info.x_max - info.x_min + 1) * 100 / info.x_res, 32);
-        setProperty(VOODOO_INPUT_PHYSICAL_MAX_Y_KEY, (info.y_max - info.y_min + 1) * 100 / info.y_res, 32);
-
-        if (voodooInputInstance) {
-            VoodooInputDimensions dims = {
-                static_cast<SInt32>(info.x_min), static_cast<SInt32>(info.x_max),
-                static_cast<SInt32>(info.y_min), static_cast<SInt32>(info.y_max)
-            };
-
-            super::messageClient(kIOMessageVoodooInputUpdateDimensionsMessage, voodooInputInstance, &dims, sizeof(dims));
-        }
-    }
-}
 
 void ApplePS2Elan::elantechReportAbsoluteV1() {
     unsigned char *packet = _ringBuffer.tail();
@@ -1753,7 +1857,10 @@ void ApplePS2Elan::elantechReportAbsoluteV3(int packetType) {
             // byte 4:  .   .   .   .  y11 y10 y9  y8
             // byte 5: y7  y6  y5  y4  y3  y2  y1  y0
             y1 = (((packet[4] & 0x0f) << 8) | packet[5]);
-            elantechRescale(x1, y1);
+            // Skip rescale for ETD0180 to preserve full coordinate range  
+            if (info.fw_version != 0x381f17) {
+                elantechRescale(x1, y1);
+            }
             y1 = info.y_max - y1;
             break;
 
@@ -1776,7 +1883,10 @@ void ApplePS2Elan::elantechReportAbsoluteV3(int packetType) {
             y1 = etd.mt[0].y;
             x2 = ((packet[1] & 0x0f) << 8) | packet[2];
             y2 = (((packet[4] & 0x0f) << 8) | packet[5]);
-            elantechRescale(x2, y2);
+            // Skip rescale for ETD0180 to preserve full coordinate range
+            if (info.fw_version != 0x381f17) {
+                elantechRescale(x2, y2);
+            }
             y2 = info.y_max - y2;
             break;
     }
@@ -1845,25 +1955,26 @@ void ApplePS2Elan::elantechReportAbsoluteV3(int packetType) {
 }
 
 void ApplePS2Elan::elantechReportAbsoluteV4(int packetType) {
+    if (info.fw_version == 0x381f17) {
+        IOLog("ETD0180_PACKET: type=%d (0=STATUS 1=HEAD 2=MOTION)\n", packetType);
+    }
+    
     switch (packetType) {
         case PACKET_V4_STATUS:
-            INTERRUPT_LOG("VoodooPS2Elan: Got status packet\n");
             processPacketStatusV4();
             break;
 
         case PACKET_V4_HEAD:
-            INTERRUPT_LOG("VoodooPS2Elan: Got head packet\n");
             processPacketHeadV4();
             break;
 
         case PACKET_V4_MOTION:
-            INTERRUPT_LOG("VoodooPS2Elan: Got motion packet\n");
             processPacketMotionV4();
             break;
 
         case PACKET_UNKNOWN:
         default:
-            // impossible to get here
+            IOLog("VoodooPS2Elan: Got UNKNOWN packet type %d\n", packetType);
             break;
     }
 }
@@ -1895,28 +2006,30 @@ void ApplePS2Elan::elantechReportTrackpoint() {
 
     unsigned char *packet = _ringBuffer.tail();
 
-    int trackpointLeftButton = packet[0] & 0x1;
-    int trackpointRightButton = packet[0] & 0x2;
-    int trackpointMiddleButton = packet[0] & 0x4;
+    // Trackpoint variables (currently unused)
+    // int trackpointLeftButton = packet[0] & 0x1;
+    // int trackpointRightButton = packet[0] & 0x2;
+    // int trackpointMiddleButton = packet[0] & 0x4;
 
-    int dx = packet[4] - (int)((packet[1] ^ 0x80) << 1);
-    int dy = (int)((packet[2] ^ 0x80) << 1) - packet[5];
+    // int dx = packet[4] - (int)((packet[1] ^ 0x80) << 1);
+    // int dy = (int)((packet[2] ^ 0x80) << 1) - packet[5];
 
-    AbsoluteTime timestamp;
-    clock_get_uptime(&timestamp);
+    // Use packet to avoid compiler warning
+    (void)packet;
 
     // remember last time trackpoint was used. this can be used in
     // interrupt handler to detect unintended input
-    uint64_t timestamp_ns;
-    absolutetime_to_nanoseconds(timestamp, &timestamp_ns);
-    keytime = timestamp_ns;
+    keytime = 0; // Simplified timestamp
     
-    trackpointReport.timestamp = timestamp;
+    // DISABLED: Trackpoint messages cause VoodooInput to create TrackpointDevice instead of multitouch trackpad
+    IOLog("VoodooPS2Elan: Trackpoint message disabled - ELAN touchpad should use multitouch only\n");
+    /*
     trackpointReport.buttons = trackpointLeftButton | trackpointMiddleButton | trackpointRightButton;
     trackpointReport.dx = dx;
     trackpointReport.dy = dy;
     super::messageClient(kIOMessageVoodooTrackpointMessage, voodooInputInstance,
                          &trackpointReport, sizeof(trackpointReport));
+    */
 }
 
 void ApplePS2Elan::processPacketStatusV4() {
@@ -1924,26 +2037,35 @@ void ApplePS2Elan::processPacketStatusV4() {
     unsigned fingers;
     leftButton = packet[0] & 0x1;
     rightButton = packet[0] & 0x2;
+    
+    // DEBUG: Log STATUS packet details for ETD0180
+    if (info.fw_version == 0x381f17) {
+        IOLog("ETD0180_STATUS: RAW[0x%02x 0x%02x 0x%02x 0x%02x 0x%02x 0x%02x]\n",
+              packet[0], packet[1], packet[2], packet[3], packet[4], packet[5]);
+        IOLog("ETD0180_STATUS: [1]&0x1f=0x%02x (fingers)\n", (packet[1] & 0x1f));
+    }
 
     // notify finger state change
-    fingers = packet[1] & 0x1f;
     int count = 0;
+    
+    fingers = packet[1] & 0x1f;
+    
     for (int i = 0; i < ETP_MAX_FINGERS; i++) {
         if ((fingers & (1 << i)) == 0) {
             // finger has been lifted off the touchpad
-            INTERRUPT_LOG("VoodooPS2Elan: %d finger has been lifted off the touchpad\n", i);
+            if (virtualFinger[i].touch) {
+                IOLog("VoodooPS2Elan: %d finger has been lifted off the touchpad\n", i);
+            }
             virtualFinger[i].touch = false;
         } else {
             virtualFinger[i].touch = true;
-            INTERRUPT_LOG("VoodooPS2Elan: %d finger has been touched the touchpad\n", i);
             count++;
         }
     }
 
     heldFingers = count;
-
     headPacketsCount = 0;
-
+    
     // if count > 0, we wait for HEAD packets to report so that we report all fingers at once.
     // if count == 0, we have to report the fact fingers are taken off, because there won't be any HEAD packets
     if (count == 0) {
@@ -1953,17 +2075,16 @@ void ApplePS2Elan::processPacketStatusV4() {
 
 void ApplePS2Elan::processPacketHeadV4() {
     unsigned char *packet = _ringBuffer.tail();
+    int id;
+    int pres, traces;
 
     leftButton = packet[0] & 0x1;
     rightButton = packet[0] & 0x2;
 
-    int id = ((packet[3] & 0xe0) >> 5) - 1;
-    int pres, traces;
-
+    id = ((packet[3] & 0xe0) >> 5) - 1;
     headPacketsCount++;
 
-    if (id < 0) {
-        INTERRUPT_LOG("VoodooPS2Elan: invalid id, aborting\n");
+    if (id < 0 || id >= ETP_MAX_FINGERS) {
         return;
     }
 
@@ -1973,7 +2094,7 @@ void ApplePS2Elan::processPacketHeadV4() {
     pres = (packet[1] & 0xf0) | ((packet[4] & 0xf0) >> 4);
     traces = (packet[0] & 0xf0) >> 4;
 
-    INTERRUPT_LOG("VoodooPS2Elan: pres: %d, traces: %d, width: %d\n", pres, traces, etd.width);
+    INTERRUPT_LOG("VoodooPS2Elan: pres: %d, traces: %d, width: %d\n", pres, traces, traces);
 
     virtualFinger[id].button = (packet[0] & 0x3);
     virtualFinger[id].prev = virtualFinger[id].now;
@@ -1991,6 +2112,46 @@ void ApplePS2Elan::processPacketHeadV4() {
 
 void ApplePS2Elan::processPacketMotionV4() {
     unsigned char *packet = _ringBuffer.tail();
+    
+    // ETD0180 special handling - MOTION packets contain absolute positions
+    if (info.fw_version == 0x381f17) {
+        leftButton = packet[0] & 0x1;
+        rightButton = packet[0] & 0x2;
+        
+        // DEBUG: Log MOTION packet
+        IOLog("ETD0180_MOTION: RAW[0x%02x 0x%02x 0x%02x 0x%02x 0x%02x 0x%02x]\n",
+              packet[0], packet[1], packet[2], packet[3], packet[4], packet[5]);
+        
+        // Extract absolute coordinates for ETD0180
+        int x = packet[1] | ((packet[3] & 0x0F) << 8);
+        int y = packet[2] | ((packet[4] & 0x0F) << 8);
+        
+        // Simple finger index from packet[0] bits
+        int fingerBits = (packet[0] & 0x30) >> 4;
+        int fingerIndex = 0;
+        if (fingerBits == 2) {
+            fingerIndex = 1;  // Second finger
+        }
+        
+        IOLog("ETD0180_MOTION: X=%d Y=%d finger=%d (bits=0x%02x)\n", x, y, fingerIndex, fingerBits);
+        
+        // Update finger position with absolute coordinates
+        if (x > 0 && y > 0 && x < info.x_max && y < info.y_max) {
+            virtualFinger[fingerIndex].touch = true;
+            virtualFinger[fingerIndex].prev = virtualFinger[fingerIndex].now;
+            virtualFinger[fingerIndex].now.x = x;
+            virtualFinger[fingerIndex].now.y = info.y_max - y;
+            virtualFinger[fingerIndex].button = (packet[0] & 0x3);
+            
+            IOLog("ETD0180_MOTION: Updated finger[%d] to X=%d Y=%d\n", 
+                  fingerIndex, x, (int)(info.y_max - y));
+        }
+        
+        sendTouchData();
+        return;
+    }
+    
+    // Standard V4 MOTION packet processing (relative deltas)
     int weight, delta_x1 = 0, delta_y1 = 0, delta_x2 = 0, delta_y2 = 0;
     int id, sid;
 
@@ -2029,6 +2190,138 @@ void ApplePS2Elan::processPacketMotionV4() {
     sendTouchData();
 }
 
+void ApplePS2Elan::processPacketETD0180() {
+    unsigned char *packet = _ringBuffer.tail();
+    
+    // ETD0180 button extraction
+    leftButton = packet[0] & 0x1;
+    rightButton = packet[0] & 0x2;
+    
+    // ETD0180 coordinate extraction - USE ETD0180 METHOD, NOT V4 HEAD!
+    // According to ETD0180_Packet_Matrix.md:
+    unsigned int x = packet[1] | ((packet[3] & 0x0F) << 8);
+    unsigned int y = packet[2] | ((packet[4] & 0x0F) << 8);
+    
+    IOLog("ETD0180_COORDS: [0x%02x 0x%02x 0x%02x 0x%02x 0x%02x 0x%02x] X=%d Y=%d L%d/R%d\n", 
+          packet[0], packet[1], packet[2], packet[3], packet[4], packet[5], x, y, leftButton, rightButton);
+    
+    // Apply resolution scaling - SKIP for ETD0180 to preserve full coordinate range
+    if (info.fw_version != 0x381f17) {  // Skip rescale for ETD0180
+        elantechRescale(x, y);
+    }
+    // ETD0180: Keep coordinates as-is to use full 0-4095 hardware range
+    
+    // Finger presence detection - ETD0180 uses different bits than standard V4
+    // Check if we have valid coordinates and finger presence
+    bool fingerPresent = (packet[0] & 0x30) != 0;  // bits 4-5 indicate finger presence
+    
+    if (fingerPresent && x > 0 && y > 0 && x < info.x_max && y < info.y_max) {
+        // Valid touch detected
+        virtualFinger[0].touch = true;
+        virtualFinger[0].prev = virtualFinger[0].now;
+        virtualFinger[0].now.x = x;
+        virtualFinger[0].now.y = info.y_max - y; // Invert Y for macOS
+        virtualFinger[0].button = (leftButton ? 1 : 0) | (rightButton ? 2 : 0);
+        
+        IOLog("ETD0180_TOUCH: Valid touch at X=%d Y=%d (inverted Y=%d)\n", 
+              x, y, (int)virtualFinger[0].now.y);
+    } else {
+        // No finger or invalid coordinates
+        virtualFinger[0].touch = false;
+        virtualFinger[0].prev = virtualFinger[0].now;
+        
+        IOLog("ETD0180_NO_TOUCH: finger=%d x=%d y=%d (max X=%d Y=%d)\n", 
+              fingerPresent, x, y, info.x_max, info.y_max);
+    }
+    
+    
+    sendTouchData();
+}
+
+void ApplePS2Elan::processPacketETD0180MultiTouch(int packetType) {
+    unsigned char *packet = _ringBuffer.tail();
+    
+    // ETD0180 button extraction (only from first finger packet)
+    if (packetType == 5) { // V4_HEAD - first finger
+        leftButton = packet[0] & 0x1;
+        rightButton = packet[0] & 0x2;
+    }
+    
+    // Determine finger index based on packet type
+    int fingerIndex = 0;
+    if (packetType == 5) {      // V4_HEAD = first finger
+        fingerIndex = 0;
+    } else if (packetType == 6) { // V4_TAIL = second finger 
+        fingerIndex = 1;
+    } else {
+        IOLog("ETD0180_MULTITOUCH: Unknown packet type %d\n", packetType);
+        return;
+    }
+    
+    // ETD0180 coordinate extraction - TRY V3-style layout for multi-touch
+    // Current V4-style gives F1: X=512 (constant), Y jumps chaotically
+    // Test V3-style: use bytes [1,2] for X and [4,5] for Y  
+    unsigned int x, y;
+    if (fingerIndex == 1) {  // Second finger - try V3-style layout
+        x = ((packet[1] & 0x0f) << 8) | packet[2];    // V3-style: bytes 1,2
+        y = (((packet[4] & 0x0f) << 8) | packet[5]);  // V3-style: bytes 4,5
+        IOLog("ETD0180_MT_F1_V3: Testing V3-layout X=%d Y=%d\n", x, y);
+    } else {  // First finger - keep V4-style (working)
+        x = packet[1] | ((packet[3] & 0x0F) << 8);    // V4-style: bytes 1,3  
+        y = packet[2] | ((packet[4] & 0x0F) << 8);    // V4-style: bytes 2,4
+    }
+    
+    IOLog("ETD0180_MT_F%d: [0x%02x 0x%02x 0x%02x 0x%02x 0x%02x 0x%02x] X=%d Y=%d type=%d\n", 
+          fingerIndex, packet[0], packet[1], packet[2], packet[3], packet[4], packet[5], x, y, packetType);
+    
+    // Apply resolution scaling - SKIP for ETD0180 to preserve full coordinate range
+    if (info.fw_version != 0x381f17) {  // Skip rescale for ETD0180
+        elantechRescale(x, y);
+    }
+    // ETD0180: Keep coordinates as-is to use full 0-4095 hardware range
+    
+    // Finger presence detection
+    bool fingerPresent = (packet[0] & 0x30) != 0;  // bits 4-5 indicate finger presence
+    
+    if (fingerPresent && x > 0 && y > 0 && x < info.x_max && y < info.y_max) {
+        // Valid touch detected
+        virtualFinger[fingerIndex].touch = true;
+        virtualFinger[fingerIndex].prev = virtualFinger[fingerIndex].now;
+        // Set coordinates - no swap needed, ETD0180 uses standard orientation
+        virtualFinger[fingerIndex].now.x = x;
+        virtualFinger[fingerIndex].now.y = info.y_max - y; // Invert Y for macOS
+        
+        IOLog("ETD0180_MT_COORDS: finger=%d x=%d y=%d (inverted_y=%d)\n", 
+              fingerIndex, x, y, (int)(info.y_max - y));
+        
+        // Only first finger controls buttons
+        if (fingerIndex == 0) {
+            virtualFinger[fingerIndex].button = (leftButton ? 1 : 0) | (rightButton ? 2 : 0);
+        } else {
+            virtualFinger[fingerIndex].button = 0;
+        }
+        
+        IOLog("ETD0180_MT_TOUCH_F%d: Valid touch at X=%d Y=%d (inverted Y=%d)\n", 
+              fingerIndex, x, y, (int)virtualFinger[fingerIndex].now.y);
+    } else {
+        // No finger or invalid coordinates
+        virtualFinger[fingerIndex].touch = false;
+        virtualFinger[fingerIndex].prev = virtualFinger[fingerIndex].now;
+        
+        IOLog("ETD0180_MT_NO_TOUCH_F%d: finger=%d x=%d y=%d (max X=%d Y=%d)\n", 
+              fingerIndex, fingerPresent, x, y, info.x_max, info.y_max);
+    }
+    
+    // CRITICAL FIX: Only send events for the PRIMARY finger (F0)
+    // This prevents cursor jumping when F1 packets arrive
+    if (fingerIndex == 0) {
+        IOLog("ETD0180_SENDING_EVENT: Primary finger F0 updated, sending touch data\n");
+        sendTouchData();
+    } else {
+        IOLog("ETD0180_SKIP_EVENT: Secondary finger F1 updated, NOT sending event\n");
+    }
+}
+
 MT2FingerType ApplePS2Elan::GetBestFingerType(int i) {
     switch (i) {
         case 0: return kMT2FingerTypeIndexFinger;
@@ -2043,188 +2336,35 @@ MT2FingerType ApplePS2Elan::GetBestFingerType(int i) {
     return kMT2FingerTypeIndexFinger;
 }
 
-void ApplePS2Elan::processPacketETD0180() {
-    unsigned char *packet = _ringBuffer.tail();
-    
-    /*
-     * ETD0180 PACKET STRUCTURE ANALYSIS (firmware 0x381f17)
-     * =======================================================
-     * 
-     * ETD0180 uses relative movement encoding, not absolute coordinates.
-     * Packet format (6 bytes):
-     * 
-     * Byte 0: [7] [6] [5] [4] [3] [2] [1] [0]
-     *         |   |   |   |   |   M   R   L  <- Button bits (always valid)
-     *         |   |   |   +---+------------- Packet type/flags
-     *         +---+------------------------- Upper bits for extended info
-     * 
-     * Byte 1: dx (signed 8-bit relative X movement)
-     * Byte 2: dy (signed 8-bit relative Y movement) 
-     * Byte 3: Additional data or packet signature
-     * Byte 4: Extended movement data or pressure info
-     * Byte 5: Extended movement data or width info
-     * 
-     * Common packet[0] values observed:
-     * 0x08 = Movement only (no buttons)
-     * 0x09 = Movement + left button
-     * 0x0A = Movement + right button  
-     * 0x0C = Movement + middle button
-     * 0x28 = Enhanced movement mode
-     * 0x29 = Enhanced movement + left button
-     */
-    
-    IOLog("ELAN_CALIB: ETD0180_RAW [0]=0x%02x [1]=%3d [2]=%3d [3]=0x%02x [4]=0x%02x [5]=0x%02x\n",
-          packet[0], (signed char)packet[1], (signed char)packet[2], packet[3], packet[4], packet[5]);
-    
-    // Try different delta extraction methods depending on firmware
-    int dx, dy;
-    bool leftBtn, rightBtn, middleBtn;
-    
-    // Method 1: Simple relative deltas (typical for most elan)
-    dx = (signed char)packet[1];
-    dy = (signed char)packet[2];
-    
-    // Method 2: Alternative extraction if method 1 gives weird values
-    if ((dx > 100 || dx < -100) || (dy > 100 || dy < -100)) {
-        dx = packet[1] - 128;  // center around 128
-        dy = packet[2] - 128;
-        IOLog("ELAN_CALIB: UNIVERSAL using alternative delta extraction\n");
-    }
-    
-    // IMPROVED: Button extraction based on packet[0] analysis for different packet types
-    // packet[0] bit pattern analysis:
-    // 0x08 (0000 1000): Movement only, no buttons
-    // 0x09 (0000 1001): Left button pressed + movement 
-    // 0x0A (0000 1010): Right button pressed + movement
-    // 0x0C (0000 1100): Middle button pressed + movement
-    // 0x28 (0010 1000): Movement with enhanced precision or multi-finger
-    // 0x29 (0010 1001): Movement + left button with enhanced precision
-    
-    // Universal button extraction - buttons are always in lower 3 bits
-    leftBtn = (packet[0] & 0x01) != 0;   // Bit 0: Left button
-    rightBtn = (packet[0] & 0x02) != 0;  // Bit 1: Right button  
-    middleBtn = (packet[0] & 0x04) != 0; // Bit 2: Middle button
-    
-    // Log packet type analysis for debugging
-    const char* packetTypeDesc = "UNKNOWN";
-    switch (packet[0] & 0x0F) {  // Focus on lower 4 bits for type
-        case 0x08: packetTypeDesc = "MOVEMENT_ONLY"; break;
-        case 0x09: packetTypeDesc = "MOVEMENT+LEFT"; break;
-        case 0x0A: packetTypeDesc = "MOVEMENT+RIGHT"; break;
-        case 0x0C: packetTypeDesc = "MOVEMENT+MIDDLE"; break;
-        default: 
-            if ((packet[0] & 0x20) != 0) packetTypeDesc = "ENHANCED_MOVEMENT";
-            break;
-    }
-    
-    // PACKET STRUCTURE ANALYSIS: Analyze bytes 3-5 for patterns
-    IOLog("ELAN_CALIB: ETD0180_ANALYSIS byte3=0x%02x (bin:%c%c%c%c%c%c%c%c) byte4=0x%02x byte5=0x%02x\n", 
-          packet[3],
-          (packet[3] & 0x80) ? '1' : '0', (packet[3] & 0x40) ? '1' : '0',
-          (packet[3] & 0x20) ? '1' : '0', (packet[3] & 0x10) ? '1' : '0',
-          (packet[3] & 0x08) ? '1' : '0', (packet[3] & 0x04) ? '1' : '0',
-          (packet[3] & 0x02) ? '1' : '0', (packet[3] & 0x01) ? '1' : '0',
-          packet[4], packet[5]);
-    
-    IOLog("ELAN_CALIB: ETD0180_DELTAS dx=%d dy=%d buttons=L%d,R%d,M%d type=%s (0x%02x)\n", 
-          dx, dy, leftBtn, rightBtn, middleBtn, packetTypeDesc, packet[0]);
-    
-    // CRITICAL: Update global button states for OS interface
-    // These are used by the system for actual click handling
-    leftButton = leftBtn;
-    rightButton = rightBtn;
-    // middleBtn state processed inline (no global state needed)
-    
-    // Movement detection - finger present if movement or button pressed
-    bool hasMovement = (dx != 0) || (dy != 0);
-    bool fingerPresent = hasMovement || leftBtn || rightBtn || middleBtn;
-    
-    IOLog("ELAN_CALIB: ETD0180_STATE hasMovement=%d fingerPresent=%d\n", hasMovement, fingerPresent);
-    
-    // REVOLUTIONARY FIX: Native relative movement for VoodooInput
-    // No more problematic integrator - let VoodooInput handle cursor positioning naturally
-    
-    if (hasMovement) {
-        // ETD0180 relative movement tracking - VoodooInput compatible
-        virtualFinger[0].touch = true;
-        virtualFinger[0].button = leftBtn || rightBtn || middleBtn; // Any button press
-        
-        // Use a persistent virtual cursor position in VoodooInput's expected coordinate space
-        // VoodooInput expects coordinates from 0 to (info.x_max - info.x_min)
-        const int LOGICAL_MAX_X = info.x_max - info.x_min;
-        const int LOGICAL_MAX_Y = info.y_max - info.y_min;
-        
-        // Static position tracking in correct VoodooInput coordinate system
-        static int virtualX = 2048; // Start in center
-        static int virtualY = 1536; // Start in center
-        
-        // Store previous position for VoodooInput
-        virtualFinger[0].prev.x = virtualX;
-        virtualFinger[0].prev.y = virtualY;
-        
-        // Apply movement with optimal gain for smooth tracking
-        const double GAIN = 2.5; // Calibrated for natural feel
-        virtualX += (int)(dx * GAIN);
-        virtualY -= (int)(dy * GAIN); // Y-axis inversion for correct movement direction
-        
-        // ELEGANT BOUNDARY HANDLING: Soft elastic boundaries - no harsh resets!
-        // Allow temporary overflow but gently guide back into bounds
-        const int MARGIN = 50; // Elastic margin for natural feel
-        
-        if (virtualX < -MARGIN) {
-            virtualX = 0; // Gentle guide to boundary
-        } else if (virtualX > LOGICAL_MAX_X + MARGIN) {
-            virtualX = LOGICAL_MAX_X; // Gentle guide to boundary
-        }
-        
-        if (virtualY < -MARGIN) {
-            virtualY = 0; // Gentle guide to boundary  
-        } else if (virtualY > LOGICAL_MAX_Y + MARGIN) {
-            virtualY = LOGICAL_MAX_Y; // Gentle guide to boundary
-        }
-        
-        // Set new position for VoodooInput
-        virtualFinger[0].now.x = virtualX;
-        virtualFinger[0].now.y = virtualY;
-        virtualFinger[0].now.pressure = 100;
-        virtualFinger[0].now.width = 5;
-        
-        heldFingers = 1;
-        
-        IOLog("ELAN_CALIB: ETD0180_SMOOTH x=%d y=%d (dx=%d dy=%d) range=(%d,%d)\n", 
-              virtualX, virtualY, dx, dy, LOGICAL_MAX_X, LOGICAL_MAX_Y);
-              
-    } else if (leftBtn || rightBtn || middleBtn) {
-        // Button press without movement - maintain current position
-        virtualFinger[0].touch = true;
-        virtualFinger[0].button = leftBtn || rightBtn || middleBtn; // Any button press
-        // Keep previous position for stable clicking
-        IOLog("ELAN_CALIB: ETD0180_BUTTON_ONLY L=%d R=%d M=%d\n", leftBtn, rightBtn, middleBtn);
-    } else {
-        // No movement and no buttons - finger lifted
-        virtualFinger[0].touch = false;
-        virtualFinger[0].button = false;
-        heldFingers = 0;
-        IOLog("ELAN_CALIB: ETD0180_LIFT finger lifted\n");
-    }
-    
-    sendTouchData();
-}
 
 void ApplePS2Elan::sendTouchData() {
-    AbsoluteTime timestamp;
-    clock_get_uptime(&timestamp);
-    uint64_t timestamp_ns;
-    absolutetime_to_nanoseconds(timestamp, &timestamp_ns);
+    uint64_t timestamp = mach_absolute_time();
+    
+    // Use mach_absolute_time directly (already in appropriate units for comparison)
+    // Note: mach_absolute_time units are platform-dependent but consistent for comparisons
 
     // Ignore input for specified time after keyboard/trackpoint usage
-    if (timestamp_ns - keytime < maxaftertyping) {
+    if (timestamp - keytime < maxaftertyping) {
         return;
     }
 
     static_assert(VOODOO_INPUT_MAX_TRANSDUCERS >= ETP_MAX_FINGERS, "Trackpad supports too many fingers");
 
     int transducers_count = 0;
+    
+    // DEBUG: Log active fingers before sending
+    if (info.fw_version == 0x381f17) {
+        int active_count = 0;
+        for (int i = 0; i < ETP_MAX_FINGERS; i++) {
+            if (virtualFinger[i].touch) {
+                active_count++;
+                IOLog("ETD0180_SEND: Finger[%d] active at X=%d Y=%d\n", 
+                      i, (int)virtualFinger[i].now.x, (int)virtualFinger[i].now.y);
+            }
+        }
+        IOLog("ETD0180_SEND: Sending %d active fingers to VoodooInput\n", active_count);
+    }
+    
     for (int i = 0; i < ETP_MAX_FINGERS; i++) {
         const auto &state = virtualFinger[i];
         if (!state.touch) {
@@ -2235,7 +2375,9 @@ void ApplePS2Elan::sendTouchData() {
 
         transducer.currentCoordinates = state.now;
         transducer.previousCoordinates = state.prev;
-        transducer.timestamp = timestamp;
+        
+        // Convert uint64_t to AbsoluteTime - use reinterpret_cast for compatibility
+        transducer.timestamp = *reinterpret_cast<AbsoluteTime*>(&timestamp);
 
         transducer.isValid = true;
         transducer.isPhysicalButtonDown = info.is_buttonpad && state.button;
@@ -2288,15 +2430,21 @@ void ApplePS2Elan::sendTouchData() {
     }
 
     inputEvent.contact_count = transducers_count;
-    inputEvent.timestamp = timestamp;
+    
+    // Convert uint64_t to AbsoluteTime - use reinterpret_cast for compatibility
+    inputEvent.timestamp = *reinterpret_cast<AbsoluteTime*>(&timestamp);
 
     if (voodooInputInstance) {
         super::messageClient(kIOMessageVoodooInputMessage, voodooInputInstance, &inputEvent, sizeof(VoodooInputEvent));
+        IOLog("ELAN_VOODINPUT_SUCCESS: Event sent to voodooInputInstance with %d contacts\n", transducers_count);
+    } else {
+        IOLog("ELAN_VOODINPUT_ERROR: voodooInputInstance is NULL - cannot send events!\n");
     }
 
     if (!info.is_buttonpad) {
         if (transducers_count == 0) {
-            trackpointReport.timestamp = timestamp;
+            // Convert uint64_t to AbsoluteTime - use reinterpret_cast for compatibility
+            trackpointReport.timestamp = *reinterpret_cast<AbsoluteTime*>(&timestamp);
             trackpointReport.buttons = leftButton | rightButton;
             trackpointReport.dx = trackpointReport.dy = 0;
             super::messageClient(kIOMessageVoodooTrackpointMessage, voodooInputInstance,
@@ -2313,7 +2461,8 @@ void ApplePS2Elan::sendTouchData() {
                 send = true;
             }
             if (send) {
-                trackpointReport.timestamp = timestamp;
+                // Convert uint64_t to AbsoluteTime - use reinterpret_cast for compatibility
+                trackpointReport.timestamp = *reinterpret_cast<AbsoluteTime*>(&timestamp);
                 trackpointReport.buttons = buttons;
                 trackpointReport.dx = trackpointReport.dy = 0;
                 super::messageClient(kIOMessageVoodooTrackpointMessage, voodooInputInstance,
@@ -2403,6 +2552,12 @@ void ApplePS2Elan::packetReady() {
                 break;
 
             case 4:
+                // Normal V4 handling
+                {
+                    UInt8 *packet = _ringBuffer.tail();
+                    IOLog("VoodooPS2Elan: RAW_PACKET [0x%02x 0x%02x 0x%02x 0x%02x 0x%02x 0x%02x] packet[3]&0x03=%d\n", 
+                          packet[0], packet[1], packet[2], packet[3], packet[4], packet[5], packet[3] & 0x03);
+                }
                 packetType = elantechPacketCheckV4();
                 INTERRUPT_LOG("VoodooPS2Elan: Packet Type %d\n", packetType);
 
@@ -2416,10 +2571,6 @@ void ApplePS2Elan::packetReady() {
                         elantechReportTrackpoint();
                         break;
 
-                    case PACKET_V4_ETD0180:
-                        IOLog("ELAN_CALIB: Processing ETD0180 packet with comprehensive logging\n");
-                        processPacketETD0180();
-                        break;
 
                     default:
                         INTERRUPT_LOG("VoodooPS2Elan: Handling absolute mode\n");
