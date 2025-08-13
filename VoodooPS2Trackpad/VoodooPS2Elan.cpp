@@ -2575,16 +2575,22 @@ void ApplePS2Elan::sendTouchData() {
                     transducers_count++;
                 }
             } else {
-                // MIDDLE CLICK AREA → Physical Button (Primary Click)
-                transducer.isPhysicalButtonDown = true;
-                IOLog("ETD0180_CLICKPAD_MIDDLE: X=%d in middle → PRIMARY CLICK\n", x);
+                // MIDDLE CLICK AREA → Force Touch (Quick Look, Nachschlagen, etc.)
+                transducer.isPhysicalButtonDown = false;  // No physical button for Force Touch
+                transducer.supportsPressure = true;       // Enable pressure events
+                transducer.currentCoordinates.pressure = 255;  // Maximum pressure for Force Touch
+                transducer.currentCoordinates.width = 10;      // Standard width
+                IOLog("ETD0180_CLICKPAD_MIDDLE: X=%d in middle → FORCE TOUCH (Quick Look/Nachschlagen)\n", x);
             }
         } else if (!info.is_buttonpad && state.button != 0) {
             // Traditional trackpad with physical buttons
             transducer.isPhysicalButtonDown = true;
         } else {
-            // No button press
+            // No button press - MUST clear Force Touch state!
             transducer.isPhysicalButtonDown = false;
+            transducer.supportsPressure = false;          // Clear pressure support
+            transducer.currentCoordinates.pressure = 0;   // Clear pressure value
+            transducer.currentCoordinates.width = 0;      // Clear width
         }
         transducer.isTransducerActive = true;
 
@@ -2593,16 +2599,20 @@ void ApplePS2Elan::sendTouchData() {
         transducer.type = FINGER;
 
         // it looks like Elan PS2 pressure and width is very inaccurate
-        // it is better to leave it that way
-        transducer.supportsPressure = false;
-
-        // DISABLE Force Touch for Clickpads - causes Quick Look problem!
-        // ETD0180 Clickpad needs normal button events, not pressure events
-        if (info.is_buttonpad) {
-            // For clickpads: Keep normal button behavior, no force touch conversion
+        // it is better to leave it that way (except for middle area Force Touch)
+        // Don't override if already set to true (middle area Force Touch)
+        if (!transducer.supportsPressure) {
             transducer.supportsPressure = false;
-            // isPhysicalButtonDown already set correctly by clickpad logic above
-            IOLog("ETD0180_CLICKPAD_MODE: Using normal button events (no force touch)\n");
+        }
+
+        // DISABLE Force Touch for Clickpads - EXCEPT middle area which uses it!
+        // ETD0180 Clickpad: Left/Right = normal buttons, Middle = Force Touch
+        if (info.is_buttonpad) {
+            // For clickpads: Don't override Force Touch if already set (middle area)
+            // isPhysicalButtonDown and supportsPressure already set by clickpad logic above
+            if (!transducer.supportsPressure) {
+                IOLog("ETD0180_CLICKPAD_MODE: Using normal button events\n");
+            }
         } else {
             // For traditional trackpads with physical buttons: Use force touch if enabled
             if (_forceTouchMode == FORCE_TOUCH_BUTTON && transducer.isPhysicalButtonDown) {
