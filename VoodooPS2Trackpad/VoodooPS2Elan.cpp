@@ -2529,7 +2529,63 @@ void ApplePS2Elan::sendTouchData() {
         transducer.timestamp = *reinterpret_cast<AbsoluteTime*>(&timestamp);
 
         transducer.isValid = true;
-        transducer.isPhysicalButtonDown = info.is_buttonpad && state.button;
+        // LINUX-STYLE CLICKPAD LOGIC: Use packet[0] button bits directly!
+        // Based on Linux elantech.c: "For clickpads map both buttons to BTN_LEFT"
+        // if (elantech_is_buttonpad(&etd->info)) input_report_key(dev, BTN_LEFT, packet[0] & 0x03);
+        
+        if (info.is_buttonpad && state.button != 0) {
+            // CLICKPAD SOLUTION: Coordinate-based areas with 2-finger simulation for right-click
+            UInt32 x = state.now.x;
+            UInt32 x_max = info.x_max;
+            
+            if (x < x_max / 3) {
+                // LEFT CLICK AREA → Physical Button (Primary Click)
+                transducer.isPhysicalButtonDown = true;
+                IOLog("ETD0180_CLICKPAD_LEFT: X=%d < %d → PRIMARY CLICK\n", x, x_max/3);
+            } else if (x > (2 * x_max) / 3) {
+                // RIGHT CLICK AREA → Realistic 2-finger tap (Secondary Click)
+                transducer.isPhysicalButtonDown = true;  // Both fingers press the button
+                IOLog("ETD0180_CLICKPAD_RIGHT: X=%d > %d → REALISTIC 2-FINGER TAP\n", x, (2 * x_max) / 3);
+                
+                // Add realistic second finger for right-click
+                if (transducers_count == 0) {  // Only if this is the first finger
+                    transducers_count++;
+                    auto &second_finger = inputEvent.transducers[transducers_count];
+                    
+                    // Place second finger realistically close (like real 2-finger tap)
+                    second_finger.currentCoordinates.x = state.now.x + 50;   // 50 units right (finger width)
+                    second_finger.currentCoordinates.y = state.now.y;         // Same Y position
+                    second_finger.currentCoordinates.pressure = state.now.pressure;
+                    second_finger.currentCoordinates.width = state.now.width;
+                    
+                    second_finger.previousCoordinates = second_finger.currentCoordinates;
+                    second_finger.timestamp = transducer.timestamp;
+                    second_finger.isValid = true;
+                    second_finger.isPhysicalButtonDown = true;  // Both fingers press
+                    second_finger.isTransducerActive = true;
+                    second_finger.secondaryId = 1;
+                    second_finger.fingerType = GetBestFingerType(1);
+                    second_finger.type = FINGER;
+                    second_finger.supportsPressure = false;
+                    
+                    IOLog("ETD0180_CLICKPAD_2FINGER: Realistic second finger at X=%d Y=%d\n", 
+                          second_finger.currentCoordinates.x, second_finger.currentCoordinates.y);
+                    
+                    // Increment counter after setting up second finger
+                    transducers_count++;
+                }
+            } else {
+                // MIDDLE CLICK AREA → Physical Button (Primary Click)
+                transducer.isPhysicalButtonDown = true;
+                IOLog("ETD0180_CLICKPAD_MIDDLE: X=%d in middle → PRIMARY CLICK\n", x);
+            }
+        } else if (!info.is_buttonpad && state.button != 0) {
+            // Traditional trackpad with physical buttons
+            transducer.isPhysicalButtonDown = true;
+        } else {
+            // No button press
+            transducer.isPhysicalButtonDown = false;
+        }
         transducer.isTransducerActive = true;
 
         transducer.secondaryId = i;
@@ -2540,13 +2596,22 @@ void ApplePS2Elan::sendTouchData() {
         // it is better to leave it that way
         transducer.supportsPressure = false;
 
-        // Force Touch emulation
-        // Physical button is translated into force touch instead of click
-        if (_forceTouchMode == FORCE_TOUCH_BUTTON && transducer.isPhysicalButtonDown) {
-            transducer.supportsPressure = true;
-            transducer.isPhysicalButtonDown = false;
-            transducer.currentCoordinates.pressure = 255;
-            transducer.currentCoordinates.width = 10;
+        // DISABLE Force Touch for Clickpads - causes Quick Look problem!
+        // ETD0180 Clickpad needs normal button events, not pressure events
+        if (info.is_buttonpad) {
+            // For clickpads: Keep normal button behavior, no force touch conversion
+            transducer.supportsPressure = false;
+            // isPhysicalButtonDown already set correctly by clickpad logic above
+            IOLog("ETD0180_CLICKPAD_MODE: Using normal button events (no force touch)\n");
+        } else {
+            // For traditional trackpads with physical buttons: Use force touch if enabled
+            if (_forceTouchMode == FORCE_TOUCH_BUTTON && transducer.isPhysicalButtonDown) {
+                transducer.supportsPressure = true;
+                transducer.isPhysicalButtonDown = false;
+                transducer.currentCoordinates.pressure = 255;
+                transducer.currentCoordinates.width = 10;
+                IOLog("ETD0180_TRADITIONAL_MODE: Using force touch conversion\n");
+            }
         }
 
         transducers_count++;
