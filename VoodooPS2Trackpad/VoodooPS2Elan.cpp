@@ -2173,6 +2173,14 @@ void ApplePS2Elan::processPacketHeadV4() {
     virtualFinger[id].now.x = x;
     virtualFinger[id].now.y = y;
 
+    // ETD0180 LINUX IMPLEMENTATION - Use traces only for touch area like Linux kernel
+    if (info.fw_version == 0x381f17) {
+        // Linux approach: traces is only used for touch area calculation, not finger detection
+        // virtualFinger[id].width already set above to traces (same as Linux)
+        IOLog("[ETD0180_LINUX] HEAD packet - id=%d, x=%d, y=%d, traces=%d (touch_area_only)\n", 
+              id, x, y, traces);
+    }
+
     // ETD0180: HEAD packets are rare, send immediately
     if (info.fw_version == 0x381f17) {
         IOLog("[ETD0180_HEAD_SEND] Sending HEAD packet data immediately\n");
@@ -2189,115 +2197,9 @@ void ApplePS2Elan::processPacketHeadV4() {
 void ApplePS2Elan::processPacketMotionV4() {
     unsigned char *packet = _ringBuffer.tail();
     
-    // ETD0180 special handling - MOTION packets contain absolute positions
+    // ETD0180 LINUX IMPLEMENTATION: Use standard V4 MOTION processing (no special case)
     if (info.fw_version == 0x381f17) {
-        leftButton = packet[0] & 0x1;
-        rightButton = packet[0] & 0x2;
-        
-        // ULTRA DEBUG: Log MOTION packet with bit analysis
-        IOLog("[ETD0180_MOTION_RAW] [0x%02x 0x%02x 0x%02x 0x%02x 0x%02x 0x%02x]\n",
-              packet[0], packet[1], packet[2], packet[3], packet[4], packet[5]);
-        
-        // ETD0180 MOTION packets contain RELATIVE DELTAS (like Linux elantech.c)
-        // Linux: delta_x1 = (signed char)packet[1]; delta_y1 = (signed char)packet[2];
-        signed char delta_x = (signed char)packet[1];
-        signed char delta_y = (signed char)packet[2];
-        
-        // Finger detection from packet[0] bits 4-5
-        int fingerBits = (packet[0] & 0x30) >> 4;
-        int traces = (packet[0] & 0xf0) >> 4;  // Number of fingers touching
-        
-        IOLog("[ETD0180_MOTION_BITS] packet[0]=0x%02x: fingerBits=0x%x traces=%d buttons=0x%x\n", 
-              packet[0], fingerBits, traces, packet[0] & 0x03);
-        IOLog("[ETD0180_MOTION_DELTAS] delta_X=%d delta_Y=%d (relative movement)\n", delta_x, delta_y);
-        
-        // ETD0180 MOTION packets contain RELATIVE DELTAS (Linux process_packet_motion_v4)
-        // fbits pattern: 0x3=F0, 0x2=F1, 0x0/0x1=single
-        if (fingerBits == 0x3) {  // F0 relative movement when multi-touch
-            // Update F0, keep F1 active - ADD deltas to current position
-            virtualFinger[0].touch = true;
-            virtualFinger[0].prev = virtualFinger[0].now;
-            virtualFinger[0].now.x += delta_x;
-            virtualFinger[0].now.y -= delta_y;  // Y inverted like Linux
-            virtualFinger[0].button = (packet[0] & 0x3);
-            
-            IOLog("[ETD0180_MOTION] F0 delta X+=%d Y-=%d -> X=%d Y=%d\n", 
-                  delta_x, delta_y, (int)virtualFinger[0].now.x, (int)virtualFinger[0].now.y);
-            
-        } else if (fingerBits == 0x2) {  // F1 relative movement (second finger)
-            // Update F1, keep F0 active - ADD deltas to current position (Linux style)
-            virtualFinger[1].touch = true;
-            virtualFinger[1].prev = virtualFinger[1].now;
-            virtualFinger[1].now.x += delta_x;
-            virtualFinger[1].now.y -= delta_y;  // Y inverted like Linux
-            virtualFinger[1].button = 0;  // F1 doesn't control buttons
-            
-            IOLog("[ETD0180_MOTION] F1 delta X+=%d Y-=%d -> X=%d Y=%d (second finger, relative)\n", 
-                  delta_x, delta_y, (int)virtualFinger[1].now.x, (int)virtualFinger[1].now.y);
-            
-        } else {  // Single touch or lift (fingerBits 0x0 or 0x1)
-            // Single finger - only F0 active
-            virtualFinger[1].touch = false;  // Clear F1
-            
-            if (traces > 0) {
-                virtualFinger[0].touch = true;
-                virtualFinger[0].prev = virtualFinger[0].now;
-                virtualFinger[0].now.x += delta_x;
-                virtualFinger[0].now.y -= delta_y;  // Y inverted like Linux
-                virtualFinger[0].button = (packet[0] & 0x3);
-                
-                IOLog("[ETD0180_MOTION] F0 single delta X+=%d Y-=%d -> X=%d Y=%d\n", 
-                      delta_x, delta_y, (int)virtualFinger[0].now.x, (int)virtualFinger[0].now.y);
-            } else {
-                virtualFinger[0].touch = false;
-                IOLog("[ETD0180_MOTION] All fingers lifted\n");
-            }
-        }
-        
-        // Smart sending for multi-touch to avoid jumps
-        static int lastMotionFingerBits = -1;
-        static int packetsSinceLastSend = 0;
-        packetsSinceLastSend++;
-        
-        bool shouldSend = false;
-        
-        if (fingerBits < 2) {
-            // Single touch - send immediately
-            shouldSend = true;
-            lastMotionFingerBits = -1;
-        } else if (fingerBits == 0x2) {
-            // ETD0180: F1 scrolling (virtual 2-finger average) - send with smoothing
-            shouldSend = true;
-            lastMotionFingerBits = -1;
-            IOLog("[ETD0180_SMOOTH] F1 scrolling detected - sending with coordinates\n");
-        } else if (fingerBits == 0x3 && lastMotionFingerBits == 0x2) {
-            // Got F0 after F1 - both updated, send
-            shouldSend = true;
-            lastMotionFingerBits = -1;
-        } else if (packetsSinceLastSend > 2) {
-            // Failsafe: send if we haven't sent for 3 packets
-            shouldSend = true;
-            lastMotionFingerBits = -1;
-        } else {
-            // Remember this packet and wait for pair
-            lastMotionFingerBits = fingerBits;
-        }
-        
-        if (shouldSend) {
-            packetsSinceLastSend = 0;
-            int activeCount = 0;
-            for (int i = 0; i < 2; i++) {
-                if (virtualFinger[i].touch) {
-                    activeCount++;
-                    IOLog("[ETD0180_SEND] F%d: X=%d Y=%d\n", 
-                          i, (int)virtualFinger[i].now.x, (int)virtualFinger[i].now.y);
-                }
-            }
-            sendTouchData();
-        } else {
-            IOLog("[ETD0180_WAIT] Buffering fbits=0x%x, waiting for pair\n", fingerBits);
-        }
-        return;
+        IOLog("[ETD0180_LINUX] Using standard V4 motion processing - no special handling\n");
     }
     
     // Standard V4 MOTION packet processing (relative deltas)
