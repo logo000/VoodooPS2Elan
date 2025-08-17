@@ -2394,6 +2394,19 @@ void ApplePS2Elan::sendTouchData() {
     // Use mach_absolute_time directly (already in appropriate units for comparison)
     // Note: mach_absolute_time units are platform-dependent but consistent for comparisons
 
+    // ETD0180 Tap-and-Hold processing - MUST be called BEFORE keyboard check!
+    processTapAndHold(timestamp);
+    
+    // ETD0180 Reset State Machine on timeout to prevent stuck states
+    if (info.fw_version == 0x381f17 && tapHoldState == WAITING_SECOND_TAP) {
+        uint64_t timestamp_ms = timestamp / 1000000ULL;
+        if (timestamp_ms - firstTapTime > TAP_HOLD_TIMEOUT) {
+            tapHoldState = TAP_IDLE;
+            dragLockActive = false;
+            IOLog("[ETD0180_TAP] Reset state machine due to timeout\n");
+        }
+    }
+
     // Ignore input for specified time after keyboard/trackpoint usage
     if (timestamp - keytime < maxaftertyping) {
         return;
@@ -2733,4 +2746,168 @@ void ApplePS2Elan::resetMouse() {
 
 void ApplePS2Elan::setTouchPadEnable(bool enable) {
     ps2_command<0>(NULL, enable ? kDP_Enable : kDP_SetDefaultsAndDisable);
+}
+
+void ApplePS2Elan::processTapAndHold(uint64_t timestamp) {
+    // ETD0180 Tap-and-Hold implementation for drag without physical buttons
+    // State machine: TAP_IDLE → FIRST_TAP_DOWN → WAITING_SECOND_TAP → SECOND_TAP_DOWN → DRAG_ACTIVE
+    
+    IOLog("[ETD0180_TAP] processTapAndHold() called, fw=0x%x\n", info.fw_version);
+    
+    if (info.fw_version != 0x381f17) {
+        return;  // Only for ETD0180
+    }
+    
+    // Convert mach_absolute_time to milliseconds for easier comparison
+    // Use simple division for timing - precision not critical for tap detection
+    uint64_t timestamp_ms = timestamp / 1000000ULL;
+    
+    // Count active fingers and get primary finger
+    int activeFingers = 0;
+    int primaryFinger = -1;
+    for (int i = 0; i < ETP_MAX_FINGERS; i++) {
+        if (virtualFinger[i].touch) {
+            activeFingers++;
+            if (primaryFinger == -1) {
+                primaryFinger = i;
+            }
+        }
+    }
+    
+    // Calculate distance helper
+    auto calculateDistance = [](const TouchCoordinates& a, const TouchCoordinates& b) -> uint32_t {
+        int dx = (int)a.x - (int)b.x;
+        int dy = (int)a.y - (int)b.y;
+        return (uint32_t)((dx * dx) + (dy * dy));  // Squared distance (avoid sqrt)
+    };
+    
+    // DEBUG: Always log current state  
+    IOLog("[ETD0180_TAP] DEBUG: threshold=%u, activeFingers=%d, primaryFinger=%d, state=%d\n", 
+          TAP_DISTANCE_THRESHOLD, activeFingers, primaryFinger, (int)tapHoldState);
+    
+    switch (tapHoldState) {
+        case TAP_IDLE:
+            if (activeFingers == 1 && primaryFinger >= 0) {
+                // First finger down - start tracking
+                tapHoldState = FIRST_TAP_DOWN;
+                firstTapTime = timestamp_ms;
+                firstTapPos = virtualFinger[primaryFinger].now;
+                IOLog("[ETD0180_TAP] First tap down at (%d,%d)\n", firstTapPos.x, firstTapPos.y);
+            } else if (activeFingers > 0) {
+                IOLog("[ETD0180_TAP] TAP_IDLE: Not starting tap (activeFingers=%d, primaryFinger=%d)\n", 
+                      activeFingers, primaryFinger);
+            }
+            break;
+            
+        case FIRST_TAP_DOWN:
+            if (activeFingers == 0) {
+                // Finger lifted - check if it was a quick tap
+                uint64_t tapDuration = timestamp_ms - firstTapTime;
+                if (tapDuration < MAX_FIRST_TAP_DURATION) {
+                    // Valid first tap - wait for second tap
+                    tapHoldState = WAITING_SECOND_TAP;
+                    firstTapTime = timestamp_ms;  // Reset timer for second tap timeout
+                    IOLog("[ETD0180_TAP] First tap up (duration=%llu ms), waiting for second tap\n", tapDuration);
+                } else {
+                    // Too long - reset
+                    tapHoldState = TAP_IDLE;
+                    IOLog("[ETD0180_TAP] First tap too long (%llu ms), reset (max=%llu)\n", 
+                          tapDuration, (uint64_t)MAX_FIRST_TAP_DURATION);
+                }
+            } else if (activeFingers == 1 && primaryFinger >= 0) {
+                // Finger still down - check for excessive movement
+                uint32_t distSquared = calculateDistance(firstTapPos, virtualFinger[primaryFinger].now);
+                if (distSquared > (TAP_DISTANCE_THRESHOLD * TAP_DISTANCE_THRESHOLD)) {
+                    // Too much movement - reset
+                    tapHoldState = TAP_IDLE;
+                    IOLog("[ETD0180_TAP] Too much movement during first tap, reset (dist=%u) start=(%d,%d) now=(%d,%d)\n",
+                          distSquared, firstTapPos.x, firstTapPos.y, 
+                          virtualFinger[primaryFinger].now.x, virtualFinger[primaryFinger].now.y);
+                }
+            } else {
+                // Multiple fingers - reset
+                tapHoldState = TAP_IDLE;
+                IOLog("[ETD0180_TAP] Multiple fingers during first tap, reset\n");
+            }
+            break;
+            
+        case WAITING_SECOND_TAP:
+            if (activeFingers == 1 && primaryFinger >= 0) {
+                // Second finger down - check position and timing
+                uint64_t timeBetweenTaps = timestamp_ms - firstTapTime;
+                uint32_t distSquared = calculateDistance(firstTapPos, virtualFinger[primaryFinger].now);
+                
+                if (timeBetweenTaps <= TAP_HOLD_TIMEOUT && 
+                    distSquared <= (TAP_DISTANCE_THRESHOLD * TAP_DISTANCE_THRESHOLD)) {
+                    // Valid second tap - start monitoring for hold
+                    tapHoldState = SECOND_TAP_DOWN;
+                    secondTapTime = timestamp_ms;
+                    secondTapPos = virtualFinger[primaryFinger].now;
+                    IOLog("[ETD0180_TAP] Second tap down at (%d,%d), time_delta=%llu ms\n", 
+                          secondTapPos.x, secondTapPos.y, timeBetweenTaps);
+                } else {
+                    // Invalid second tap - reset
+                    tapHoldState = TAP_IDLE;
+                    IOLog("[ETD0180_TAP] Invalid second tap (time=%llu, dist=%u) first=(%d,%d) second=(%d,%d), reset\n", 
+                          timeBetweenTaps, distSquared, firstTapPos.x, firstTapPos.y, 
+                          virtualFinger[primaryFinger].now.x, virtualFinger[primaryFinger].now.y);
+                }
+            } else if (activeFingers > 1) {
+                // Multiple fingers - reset
+                tapHoldState = TAP_IDLE;
+                IOLog("[ETD0180_TAP] Multiple fingers, reset\n");
+            } else if (timestamp_ms - firstTapTime > TAP_HOLD_TIMEOUT) {
+                // Timeout - reset
+                tapHoldState = TAP_IDLE;
+                IOLog("[ETD0180_TAP] Second tap timeout, reset\n");
+            }
+            break;
+            
+        case SECOND_TAP_DOWN:
+            if (activeFingers == 0) {
+                // Finger lifted before hold threshold - reset
+                tapHoldState = TAP_IDLE;
+                IOLog("[ETD0180_TAP] Second tap released too early, reset\n");
+            } else if (activeFingers == 1 && primaryFinger >= 0) {
+                uint64_t holdDuration = timestamp_ms - secondTapTime;
+                uint32_t distSquared = calculateDistance(secondTapPos, virtualFinger[primaryFinger].now);
+                
+                if (holdDuration >= HOLD_THRESHOLD) {
+                    // Hold threshold reached - activate drag!
+                    tapHoldState = DRAG_ACTIVE;
+                    dragLockActive = true;
+                    IOLog("[ETD0180_TAP] DRAG ACTIVATED! Hold duration=%llu ms\n", holdDuration);
+                } else if (distSquared > (TAP_DISTANCE_THRESHOLD * TAP_DISTANCE_THRESHOLD)) {
+                    // Too much movement before hold threshold - reset
+                    tapHoldState = TAP_IDLE;
+                    IOLog("[ETD0180_TAP] Movement before hold threshold, reset\n");
+                }
+            } else {
+                // Multiple fingers - reset
+                tapHoldState = TAP_IDLE;
+                IOLog("[ETD0180_TAP] Multiple fingers during second tap, reset\n");
+            }
+            break;
+            
+        case DRAG_ACTIVE:
+            if (activeFingers == 0) {
+                // Finger lifted - end drag
+                tapHoldState = TAP_IDLE;
+                dragLockActive = false;
+                IOLog("[ETD0180_TAP] DRAG ENDED - finger lifted\n");
+            } else if (activeFingers > 1) {
+                // Multiple fingers - end drag
+                tapHoldState = TAP_IDLE;
+                dragLockActive = false;
+                IOLog("[ETD0180_TAP] DRAG ENDED - multiple fingers\n");
+            }
+            // During drag, keep dragLockActive = true to simulate button press
+            break;
+    }
+    
+    // Apply drag lock to primary finger if active
+    if (dragLockActive && primaryFinger >= 0) {
+        virtualFinger[primaryFinger].button = 1;  // Simulate left button press
+        IOLog("[ETD0180_TAP] Drag active - simulating button press on finger %d\n", primaryFinger);
+    }
 }

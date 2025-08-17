@@ -233,6 +233,28 @@ private:
     UInt32 lastLeftButton = 0;
     UInt32 lastRightButton = 0;
 
+    // ETD0180 Tap-and-Hold State Machine for drag without physical buttons
+    enum TapHoldState {
+        TAP_IDLE,
+        FIRST_TAP_DOWN,
+        WAITING_SECOND_TAP,
+        SECOND_TAP_DOWN,
+        DRAG_ACTIVE
+    };
+    
+    TapHoldState tapHoldState = TAP_IDLE;
+    uint64_t firstTapTime = 0;
+    uint64_t secondTapTime = 0;
+    TouchCoordinates firstTapPos = {0, 0, 0, 0};
+    TouchCoordinates secondTapPos = {0, 0, 0, 0};
+    bool dragLockActive = false;
+    
+    // Tap-and-Hold timing constants (milliseconds) - TUNED FOR USER'S NATURAL SPEED (154ms delta, 39ms hold)
+    static const uint64_t TAP_HOLD_TIMEOUT = 300;      // Max time between first and second tap (154ms measured, tight window to prevent false triggers)
+    static const uint64_t HOLD_THRESHOLD = 50;         // Min time to hold second tap for drag activation (user can do ~39ms)
+    static const uint64_t MAX_FIRST_TAP_DURATION = 800; // Max duration for first tap (745ms measured)
+    static const uint32_t TAP_DISTANCE_THRESHOLD = 1000; // Max movement allowed during taps (ETD0180 needs tolerance)
+
     const float sin30deg = 0.5f;
     const float cos30deg = 0.86602540378f;
     UInt32 lastFingers = 0;
@@ -323,6 +345,7 @@ private:
     void processPacketETD0180();
     void processPacketETD0180MultiTouch(int packetType);
     void sendTouchData();
+    void processTapAndHold(uint64_t timestamp);  // ETD0180 Tap-and-Hold implementation
     void resetMouse();
     void setTouchPadEnable(bool enable);
 
