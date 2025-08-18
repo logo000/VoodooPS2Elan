@@ -8,3 +8,14 @@ xcshareddata
 project.xcworkspace
 VoodooInput
 /MacKernelSDK
+# macOS
+.DS_Store
+._*
+
+# Build artifacts  
+build.log
+*.log
+
+# Backup directories
+*.FRESH/
+*.backup/
