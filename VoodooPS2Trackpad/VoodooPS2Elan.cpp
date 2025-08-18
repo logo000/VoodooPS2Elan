@@ -435,26 +435,6 @@ void ApplePS2Elan::setTrackpointProperties()
     IOLog("VoodooPS2Elan: setTrackpointProperties() disabled - ELAN is pure touchpad, not trackpoint hybrid\n");
     return;
     
-    /*
-    // DISABLED: Original trackpoint properties code
-    OSDictionary *trackpoint = OSDictionary::withCapacity(10);
-    if (trackpoint == nullptr)
-        return;
-    
-    PS2DictSetNumber(trackpoint, VOODOO_TRACKPOINT_DEADZONE, _trackpointDeadzone);
-    PS2DictSetNumber(trackpoint, VOODOO_TRACKPOINT_BTN_CNT, 3);
-    PS2DictSetNumber(trackpoint, VOODOO_TRACKPOINT_MOUSE_MULT_X, _trackpointMultiplierX);
-    PS2DictSetNumber(trackpoint, VOODOO_TRACKPOINT_MOUSE_MULT_Y, _trackpointMultiplierY);
-    PS2DictSetNumber(trackpoint, VOODOO_TRACKPOINT_MOUSE_DIV_X, _trackpointDividerX);
-    PS2DictSetNumber(trackpoint, VOODOO_TRACKPOINT_MOUSE_DIV_Y, _trackpointDividerY);
-    PS2DictSetNumber(trackpoint, VOODOO_TRACKPOINT_SCROLL_MULT_X, _trackpointScrollMultiplierX);
-    PS2DictSetNumber(trackpoint, VOODOO_TRACKPOINT_SCROLL_MULT_Y, _trackpointScrollMultiplierY);
-    PS2DictSetNumber(trackpoint, VOODOO_TRACKPOINT_SCROLL_DIV_X, _trackpointScrollDividerX);
-    PS2DictSetNumber(trackpoint, VOODOO_TRACKPOINT_SCROLL_DIV_Y, _trackpointScrollDividerY);
-    
-    setProperty(VOODOO_TRACKPOINT_KEY, trackpoint);
-    OSSafeReleaseNULL(trackpoint);
-    */
 }
 
 IOReturn ApplePS2Elan::message(UInt32 type, IOService* provider, void* argument) {
@@ -2004,13 +1984,6 @@ void ApplePS2Elan::elantechReportTrackpoint() {
 
     unsigned char *packet = _ringBuffer.tail();
 
-    // Trackpoint variables (currently unused)
-    // int trackpointLeftButton = packet[0] & 0x1;
-    // int trackpointRightButton = packet[0] & 0x2;
-    // int trackpointMiddleButton = packet[0] & 0x4;
-
-    // int dx = packet[4] - (int)((packet[1] ^ 0x80) << 1);
-    // int dy = (int)((packet[2] ^ 0x80) << 1) - packet[5];
 
     // Use packet to avoid compiler warning
     (void)packet;
@@ -2021,13 +1994,6 @@ void ApplePS2Elan::elantechReportTrackpoint() {
     
     // DISABLED: Trackpoint messages cause VoodooInput to create TrackpointDevice instead of multitouch trackpad
     IOLog("VoodooPS2Elan: Trackpoint message disabled - ELAN touchpad should use multitouch only\n");
-    /*
-    trackpointReport.buttons = trackpointLeftButton | trackpointMiddleButton | trackpointRightButton;
-    trackpointReport.dx = dx;
-    trackpointReport.dy = dy;
-    super::messageClient(kIOMessageVoodooTrackpointMessage, voodooInputInstance,
-                         &trackpointReport, sizeof(trackpointReport));
-    */
 }
 
 void ApplePS2Elan::processPacketStatusV4() {
