@@ -2417,13 +2417,13 @@ void ApplePS2Elan::sendTouchData() {
             UInt32 x_max = info.x_max;
             
             // ETD0180 MIDDLE-CLICK: Above button area (Force Touch zone)
-            if (y < 3950) {  // Above button area
+            if (y < 3800) {  // Above button area
                 // MIDDLE CLICK AREA → Force Touch (Quick Look, Nachschlagen, etc.)
                 transducer.isPhysicalButtonDown = false;  // No physical button for Force Touch
                 transducer.supportsPressure = true;       // Enable pressure events
                 transducer.currentCoordinates.pressure = 255;  // Maximum pressure for Force Touch
                 transducer.currentCoordinates.width = 10;      // Standard width
-                IOLog("ETD0180_CLICKPAD_MIDDLE: Y=%d < 3950 → FORCE TOUCH (Quick Look/Nachschlagen)\n", y);
+                IOLog("ETD0180_CLICKPAD_MIDDLE: Y=%d < 3800 → FORCE TOUCH (Quick Look/Nachschlagen)\n", y);
             } else if (x < 1609) {  // Left half of button area: optimal 50/50 split
                 // LEFT CLICK AREA → Physical Button (Primary Click)
                 transducer.isPhysicalButtonDown = true;
