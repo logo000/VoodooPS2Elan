@@ -1857,10 +1857,7 @@ void ApplePS2Elan::elantechReportAbsoluteV3(int packetType) {
             // byte 4:  .   .   .   .  y11 y10 y9  y8
             // byte 5: y7  y6  y5  y4  y3  y2  y1  y0
             y1 = (((packet[4] & 0x0f) << 8) | packet[5]);
-            // Skip rescale for ETD0180 to preserve full coordinate range  
-            if (info.fw_version != 0x381f17) {
-                elantechRescale(x1, y1);
-            }
+            elantechRescale(x1, y1);
             y1 = info.y_max - y1;
             break;
 
@@ -1883,10 +1880,7 @@ void ApplePS2Elan::elantechReportAbsoluteV3(int packetType) {
             y1 = etd.mt[0].y;
             x2 = ((packet[1] & 0x0f) << 8) | packet[2];
             y2 = (((packet[4] & 0x0f) << 8) | packet[5]);
-            // Skip rescale for ETD0180 to preserve full coordinate range
-            if (info.fw_version != 0x381f17) {
-                elantechRescale(x2, y2);
-            }
+            elantechRescale(x2, y2);
             y2 = info.y_max - y2;
             break;
     }
@@ -2256,11 +2250,7 @@ void ApplePS2Elan::processPacketETD0180() {
     IOLog("ETD0180_COORDS: [0x%02x 0x%02x 0x%02x 0x%02x 0x%02x 0x%02x] X=%d Y=%d L%d/R%d\n", 
           packet[0], packet[1], packet[2], packet[3], packet[4], packet[5], x, y, leftButton, rightButton);
     
-    // Apply resolution scaling - SKIP for ETD0180 to preserve full coordinate range
-    if (info.fw_version != 0x381f17) {  // Skip rescale for ETD0180
-        elantechRescale(x, y);
-    }
-    // ETD0180: Keep coordinates as-is to use full 0-4095 hardware range
+    elantechRescale(x, y);
     
     // Finger presence detection - ETD0180 uses different bits than standard V4
     // Check if we have valid coordinates and finger presence
@@ -2325,11 +2315,7 @@ void ApplePS2Elan::processPacketETD0180MultiTouch(int packetType) {
     IOLog("ETD0180_MT_F%d: [0x%02x 0x%02x 0x%02x 0x%02x 0x%02x 0x%02x] X=%d Y=%d type=%d\n", 
           fingerIndex, packet[0], packet[1], packet[2], packet[3], packet[4], packet[5], x, y, packetType);
     
-    // Apply resolution scaling - SKIP for ETD0180 to preserve full coordinate range
-    if (info.fw_version != 0x381f17) {  // Skip rescale for ETD0180
-        elantechRescale(x, y);
-    }
-    // ETD0180: Keep coordinates as-is to use full 0-4095 hardware range
+    elantechRescale(x, y);
     
     // Finger presence detection
     bool fingerPresent = (packet[0] & 0x30) != 0;  // bits 4-5 indicate finger presence
