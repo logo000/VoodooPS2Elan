@@ -19,3 +19,10 @@ build.log
 # Backup directories
 *.FRESH/
 *.backup/
+
+# Generated/Test Files
+README-CALIBRATION.md
+calibration-tool.html
+claude-api-server.js
+ETD0180-TESTING-INSTRUCTIONS.md
+._*
