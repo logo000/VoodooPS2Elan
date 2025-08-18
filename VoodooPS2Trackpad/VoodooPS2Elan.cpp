@@ -2413,16 +2413,25 @@ void ApplePS2Elan::sendTouchData() {
         if (info.is_buttonpad && state.button != 0) {
             // CLICKPAD SOLUTION: Coordinate-based areas with 2-finger simulation for right-click
             UInt32 x = state.now.x;
+            UInt32 y = state.now.y;
             UInt32 x_max = info.x_max;
             
-            if (x < x_max / 3) {
+            // ETD0180 MIDDLE-CLICK: Above button area (Force Touch zone)
+            if (y < 3950) {  // Above button area
+                // MIDDLE CLICK AREA → Force Touch (Quick Look, Nachschlagen, etc.)
+                transducer.isPhysicalButtonDown = false;  // No physical button for Force Touch
+                transducer.supportsPressure = true;       // Enable pressure events
+                transducer.currentCoordinates.pressure = 255;  // Maximum pressure for Force Touch
+                transducer.currentCoordinates.width = 10;      // Standard width
+                IOLog("ETD0180_CLICKPAD_MIDDLE: Y=%d < 3950 → FORCE TOUCH (Quick Look/Nachschlagen)\n", y);
+            } else if (x < 1609) {  // Left half of button area: optimal 50/50 split
                 // LEFT CLICK AREA → Physical Button (Primary Click)
                 transducer.isPhysicalButtonDown = true;
-                IOLog("ETD0180_CLICKPAD_LEFT: X=%d < %d → PRIMARY CLICK\n", x, x_max/3);
-            } else if (x > (2 * x_max) / 3) {
+                IOLog("ETD0180_CLICKPAD_LEFT: X=%d < 1609 → PRIMARY CLICK\n", x);
+            } else {  // Right half of button area: x >= 1609
                 // RIGHT CLICK AREA → Realistic 2-finger tap (Secondary Click)
                 transducer.isPhysicalButtonDown = true;  // Both fingers press the button
-                IOLog("ETD0180_CLICKPAD_RIGHT: X=%d > %d → REALISTIC 2-FINGER TAP\n", x, (2 * x_max) / 3);
+                IOLog("ETD0180_CLICKPAD_RIGHT: X=%d >= 1609 → REALISTIC 2-FINGER TAP\n", x);
                 
                 // Add realistic second finger for right-click
                 if (transducers_count == 0) {  // Only if this is the first finger
@@ -2451,13 +2460,6 @@ void ApplePS2Elan::sendTouchData() {
                     // Increment counter after setting up second finger
                     transducers_count++;
                 }
-            } else {
-                // MIDDLE CLICK AREA → Force Touch (Quick Look, Nachschlagen, etc.)
-                transducer.isPhysicalButtonDown = false;  // No physical button for Force Touch
-                transducer.supportsPressure = true;       // Enable pressure events
-                transducer.currentCoordinates.pressure = 255;  // Maximum pressure for Force Touch
-                transducer.currentCoordinates.width = 10;      // Standard width
-                IOLog("ETD0180_CLICKPAD_MIDDLE: X=%d in middle → FORCE TOUCH (Quick Look/Nachschlagen)\n", x);
             }
         } else if (!info.is_buttonpad && state.button != 0) {
             // Traditional trackpad with physical buttons
