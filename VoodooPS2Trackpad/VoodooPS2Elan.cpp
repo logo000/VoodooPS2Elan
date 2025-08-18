@@ -16,6 +16,9 @@
 #define INTERRUPT_LOG(args...)  do { } while (0)
 #endif
 
+// ETD0180 firmware version macro for cleaner code
+#define IS_ETD0180() (info.fw_version == 0x381f17)
+
 #include <IOKit/IOService.h>
 #include <IOKit/IOLib.h>
 #include <IOKit/hidsystem/IOHIDParameter.h>
@@ -903,7 +906,7 @@ int ApplePS2Elan::elantechQueryInfo() {
         }
         
         // ETD0180 CURSOR SPEED FIX: DECREASE resolution for FASTER cursor
-        if (info.fw_version == 0x381f17) {  // ETD0180
+        if (IS_ETD0180()) {  // ETD0180
             info.x_res = 8;   // Decrease from 15 to 8 for EVEN FASTER cursor
             info.y_res = 8;   // Decrease from 15 to 8 for EVEN FASTER cursor
             IOLog("ETD0180_FIX: Decreased resolution to x_res=%d y_res=%d for ULTRA FAST cursor\n", 
@@ -1170,7 +1173,7 @@ int ApplePS2Elan::elantechSetupPS2() {
 
     // Special handling for firmware 0x381f17 BEFORE trying absolute mode
     // This firmware has a bug where reg_07 gets cleared
-    bool needs_reg07_fix = (info.fw_version == 0x381f17);
+    bool needs_reg07_fix = (IS_ETD0180());
     IOLog("VoodooPS2Elan: [ULTRA DEBUG] needs_reg07_fix=%d\n", needs_reg07_fix);
     if (needs_reg07_fix) {
         IOLog("VoodooPS2Elan: ETD0180 detected (fw 0x381f17) - applying special handling\n");
@@ -1206,7 +1209,7 @@ int ApplePS2Elan::elantechSetupPS2() {
     }
 
     // ETD0180 COORDINATE RANGE FIX: Use full hardware capability
-    if (info.fw_version == 0x381f17) {
+    if (IS_ETD0180()) {
         // ANALYSIS: Live tests showed hardware can do much more:
         // - Multi-touch Y coordinates reached 3847 (vs. old limit 1150)
         // - X coordinates were artificially limited by old tight ranges
@@ -1250,7 +1253,7 @@ int ApplePS2Elan::elantechSetupPS2() {
     // CRITICAL ETD0180 FIX: Restore absolute mode after PS2 initialization
     // ALL ETD0180 chips lose absolute mode after set_rate/set_resolution commands
     // This is NOT firmware-specific - it affects the entire ETD0180 series!
-    if (info.fw_version == 0x381f17) {  // ETD0180 detection
+    if (IS_ETD0180()) {  // ETD0180 detection
         IOLog("VoodooPS2Elan: CRITICAL - ETD0180 absolute mode restoration required!\n");
         IOLog("VoodooPS2Elan: PS2 init destroys absolute mode - restoring reg_07=0x%02x\n", etd.reg_07);
         
@@ -1550,7 +1553,7 @@ int ApplePS2Elan::elantechPacketCheckV4() {
     }
 
     // ETD0180 debug logging but treat as normal V4 hardware
-    if (info.fw_version == 0x381f17) {
+    if (IS_ETD0180()) {
         IOLog("ETD0180_PACKET_CHECK: RAW[0x%02x 0x%02x 0x%02x 0x%02x 0x%02x 0x%02x]\n", 
               packet[0], packet[1], packet[2], packet[3], packet[4], packet[5]);
         IOLog("ETD0180_PACKET_TYPE: [3]&0x03=%d (0=STATUS 1=HEAD 2=MOTION)\n", packet_type);
@@ -1929,8 +1932,8 @@ void ApplePS2Elan::elantechReportAbsoluteV3(int packetType) {
 }
 
 void ApplePS2Elan::elantechReportAbsoluteV4(int packetType) {
-    if (info.fw_version == 0x381f17) {
-        if (info.fw_version == 0x381f17) {
+    if (IS_ETD0180()) {
+        if (IS_ETD0180()) {
         IOLog("[ETD0180_PROCESS] PacketType=%d (5=HEAD 6=MOTION 7=STATUS) selected for processing\n", packetType);
     } else {
         IOLog("ETD0180_PACKET: type=%d (0=STATUS 1=HEAD 2=MOTION)\n", packetType);
@@ -2003,7 +2006,7 @@ void ApplePS2Elan::processPacketStatusV4() {
     rightButton = packet[0] & 0x2;
     
     // ETD0180 STATUS packet handling
-    if (info.fw_version == 0x381f17) {
+    if (IS_ETD0180()) {
         static int status_pkt_num = 0;
         status_pkt_num++;
         
@@ -2061,7 +2064,7 @@ void ApplePS2Elan::processPacketHeadV4() {
     int pres, traces;
 
     // ETD0180 special HEAD packet handling for Multi-Touch
-    if (info.fw_version == 0x381f17) {
+    if (IS_ETD0180()) {
         static int head_pkt_num = 0;
         head_pkt_num++;
         
@@ -2092,13 +2095,13 @@ void ApplePS2Elan::processPacketHeadV4() {
     
     // Validate finger ID
     if (id < 0 || id >= ETP_MAX_FINGERS) {
-        if (info.fw_version == 0x381f17) {
+        if (IS_ETD0180()) {
             IOLog("[ETD0180_HEAD_ERROR] Invalid finger ID %d, dropping packet\n", id);
         }
         return;
     }
     
-    if (info.fw_version == 0x381f17) {
+    if (IS_ETD0180()) {
         IOLog("[ETD0180_HEAD_FINGER] Processing for finger F%d\n", id);
     }
 
@@ -2106,7 +2109,7 @@ void ApplePS2Elan::processPacketHeadV4() {
     int y = info.y_max - (((packet[4] & 0x0f) << 8) | packet[5]);
     
     // Coordinate extraction debug for ETD0180
-    if (info.fw_version == 0x381f17) {
+    if (IS_ETD0180()) {
         IOLog("[ETD0180_COORDS] Finger %d:\n", id);
         IOLog("  - X: packet[1]&0x0f=0x%02x << 8 | packet[2]=0x%02x = %d\n",
               packet[1] & 0x0f, packet[2], x);
@@ -2117,7 +2120,7 @@ void ApplePS2Elan::processPacketHeadV4() {
     pres = (packet[1] & 0xf0) | ((packet[4] & 0xf0) >> 4);
     traces = (packet[0] & 0xf0) >> 4;
 
-    if (info.fw_version == 0x381f17) {
+    if (IS_ETD0180()) {
         IOLog("[ETD0180_TOUCH] F%d: X=%d Y=%d pres=%d traces=%d btn=%d\n", 
               id, x, y, pres, traces, packet[0] & 0x3);
     }
@@ -2134,7 +2137,7 @@ void ApplePS2Elan::processPacketHeadV4() {
     virtualFinger[id].now.y = y;
 
     // ETD0180 LINUX IMPLEMENTATION - Use traces only for touch area like Linux kernel
-    if (info.fw_version == 0x381f17) {
+    if (IS_ETD0180()) {
         // Linux approach: traces is only used for touch area calculation, not finger detection
         // virtualFinger[id].width already set above to traces (same as Linux)
         IOLog("[ETD0180_LINUX] HEAD packet - id=%d, x=%d, y=%d, traces=%d (touch_area_only)\n", 
@@ -2142,7 +2145,7 @@ void ApplePS2Elan::processPacketHeadV4() {
     }
 
     // ETD0180: HEAD packets are rare, send immediately
-    if (info.fw_version == 0x381f17) {
+    if (IS_ETD0180()) {
         IOLog("[ETD0180_HEAD_SEND] Sending HEAD packet data immediately\n");
         sendTouchData();
     } else {
@@ -2158,7 +2161,7 @@ void ApplePS2Elan::processPacketMotionV4() {
     unsigned char *packet = _ringBuffer.tail();
     
     // ETD0180 LINUX IMPLEMENTATION: Use standard V4 MOTION processing (no special case)
-    if (info.fw_version == 0x381f17) {
+    if (IS_ETD0180()) {
         IOLog("[ETD0180_LINUX] Using standard V4 motion processing - no special handling\n");
     }
     
@@ -2350,7 +2353,7 @@ void ApplePS2Elan::sendTouchData() {
     processTapAndHold(timestamp);
     
     // ETD0180 Reset State Machine on timeout to prevent stuck states
-    if (info.fw_version == 0x381f17 && tapHoldState == WAITING_SECOND_TAP) {
+    if (IS_ETD0180() && tapHoldState == WAITING_SECOND_TAP) {
         uint64_t timestamp_ms = timestamp / 1000000ULL;
         if (timestamp_ms - firstTapTime > TAP_HOLD_TIMEOUT) {
             tapHoldState = TAP_IDLE;
@@ -2369,7 +2372,7 @@ void ApplePS2Elan::sendTouchData() {
     int transducers_count = 0;
     
     // DEBUG: Log active fingers before sending
-    if (info.fw_version == 0x381f17) {
+    if (IS_ETD0180()) {
         int active_count = 0;
         for (int i = 0; i < ETP_MAX_FINGERS; i++) {
             if (virtualFinger[i].touch) {
@@ -2646,7 +2649,7 @@ void ApplePS2Elan::packetReady() {
                 // Normal V4 handling
                 {
                     UInt8 *packet = _ringBuffer.tail();
-                    if (info.fw_version == 0x381f17) {
+                    if (IS_ETD0180()) {
                         // ULTRA logging for ETD0180
                         static int irq_cnt = 0;
                         irq_cnt++;
@@ -2706,7 +2709,7 @@ void ApplePS2Elan::processTapAndHold(uint64_t timestamp) {
     
     IOLog("[ETD0180_TAP] processTapAndHold() called, fw=0x%x\n", info.fw_version);
     
-    if (info.fw_version != 0x381f17) {
+    if (!IS_ETD0180()) {
         return;  // Only for ETD0180
     }
     
