@@ -2135,6 +2135,13 @@ void ApplePS2Elan::processPacketHeadV4() {
 
     virtualFinger[id].now.x = x;
     virtualFinger[id].now.y = y;
+    
+    // ETD0180 MULTI-TOUCH EDGE DETECTION: Map hardware edge to logical edge for macOS gestures  
+    if (IS_ETD0180() && x > 3000) {  // Near real right edge (3097)
+        virtualFinger[id].now.x = info.x_max - 5;  // Map to logical edge
+        IOLog("ETD0180_EDGE_MT: F%d hardware edge X=%d mapped to logical X=%d\n", 
+              id, x, (int)virtualFinger[id].now.x);
+    }
 
     // ETD0180 LINUX IMPLEMENTATION - Use traces only for touch area like Linux kernel
     if (IS_ETD0180()) {
