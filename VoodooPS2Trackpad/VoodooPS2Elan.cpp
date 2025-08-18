@@ -92,7 +92,6 @@ void ApplePS2Elan::injectVersionDependentProperties(OSDictionary *config) {
 }
 
 ApplePS2Elan *ApplePS2Elan::probe(IOService *provider, SInt32 *score) {
-    IOLog("VoodooPS2Elan: [ULTRA DEBUG] probe() entered, score=%d\n", score ? *score : -1);
     DEBUG_LOG("ApplePS2Elan::probe entered...\n");
 
     // The driver has been instructed to verify the presence of the actual
@@ -102,10 +101,9 @@ ApplePS2Elan *ApplePS2Elan::probe(IOService *provider, SInt32 *score) {
     // responses expected by the commands we send it).
 
     if (!super::probe(provider, score)) {
-        IOLog("VoodooPS2Elan: [ULTRA DEBUG] super::probe() FAILED\n");
+        DEBUG_LOG("ApplePS2Elan: super::probe() failed\n");
         return 0;
     }
-    IOLog("VoodooPS2Elan: [ULTRA DEBUG] super::probe() SUCCESS\n");
 
     _device = (ApplePS2MouseDevice*)provider;
 
@@ -133,25 +131,25 @@ ApplePS2Elan *ApplePS2Elan::probe(IOService *provider, SInt32 *score) {
 
     resetMouse();
 
-    IOLog("VoodooPS2Elan: [ULTRA DEBUG] Sending magic knock to detect Elantech\n");
+    DEBUG_LOG("VoodooPS2Elan: Detecting Elantech device\n");
     DEBUG_LOG("VoodooPS2Elan: send magic knock to the device.\n");
     // send magic knock to the device
     if (elantechDetect()) {
-        IOLog("VoodooPS2Elan: [ULTRA DEBUG] elantechDetect() FAILED - not an Elantech device\n");
+        DEBUG_LOG("VoodooPS2Elan: elantechDetect() failed - not an Elantech device\n");
         DEBUG_LOG("VoodooPS2Elan: elan touchpad not detected\n");
         return NULL;
     }
-    IOLog("VoodooPS2Elan: [ULTRA DEBUG] elantechDetect() SUCCESS - Elantech device confirmed\n");
+    DEBUG_LOG("VoodooPS2Elan: elantechDetect() SUCCESS - Elantech device confirmed\n");
 
     resetMouse();
 
-    IOLog("VoodooPS2Elan: [ULTRA DEBUG] Querying device info\n");
+    DEBUG_LOG("VoodooPS2Elan: Querying device info\n");
     if (elantechQueryInfo()) {
-        IOLog("VoodooPS2Elan: [ULTRA DEBUG] elantechQueryInfo() FAILED\n");
+        DEBUG_LOG("VoodooPS2Elan: elantechQueryInfo() FAILED\n");
         DEBUG_LOG("VoodooPS2Elan: query info failed\n");
         return NULL;
     }
-    IOLog("VoodooPS2Elan: [ULTRA DEBUG] elantechQueryInfo() SUCCESS, fw=0x%06x\n", info.fw_version);
+    DEBUG_LOG("VoodooPS2Elan: elantechQueryInfo() SUCCESS, fw=0x%06x\n", info.fw_version);
 
     DEBUG_LOG("VoodooPS2Elan: capabilities: %x %x %x\n", info.capabilities[0], info.capabilities[1], info.capabilities[2]);
     DEBUG_LOG("VoodooPS2Elan: samples: %x %x %x\n", info.capabilities[0], info.capabilities[1], info.capabilities[2]);
@@ -176,7 +174,7 @@ ApplePS2Elan *ApplePS2Elan::probe(IOService *provider, SInt32 *score) {
     DEBUG_LOG("VoodooPS2Elan: has_middle_button: %d\n", info.has_middle_button);
 
     DEBUG_LOG("VoodooPS2Elan: elan touchpad detected. Probing finished.\n");
-    IOLog("VoodooPS2Elan: [ULTRA DEBUG] probe() FINISHED SUCCESSFULLY - ApplePS2Elan will be used\n");
+    DEBUG_LOG("VoodooPS2Elan: probe() FINISHED SUCCESSFULLY - ApplePS2Elan will be used\n");
 
     _device = nullptr;
 
@@ -1164,8 +1162,8 @@ skip_readback_reg_10:
  * Initialize the touchpad
  */
 int ApplePS2Elan::elantechSetupPS2() {
-    IOLog("VoodooPS2Elan: [ULTRA DEBUG] elantechSetupPS2() called!\n");
-    IOLog("VoodooPS2Elan: [ULTRA DEBUG] info.fw_version=0x%06x\n", info.fw_version);
+    DEBUG_LOG("VoodooPS2Elan: elantechSetupPS2() called!\n");
+    DEBUG_LOG("VoodooPS2Elan: info.fw_version=0x%06x\n", info.fw_version);
     
     etd.parity[0] = 1;
     for (int i = 1; i < 256; i++)
@@ -1174,7 +1172,7 @@ int ApplePS2Elan::elantechSetupPS2() {
     // Special handling for firmware 0x381f17 BEFORE trying absolute mode
     // This firmware has a bug where reg_07 gets cleared
     bool needs_reg07_fix = (IS_ETD0180());
-    IOLog("VoodooPS2Elan: [ULTRA DEBUG] needs_reg07_fix=%d\n", needs_reg07_fix);
+    DEBUG_LOG("VoodooPS2Elan: needs_reg07_fix=%d\n", needs_reg07_fix);
     if (needs_reg07_fix) {
         IOLog("VoodooPS2Elan: ETD0180 detected (fw 0x381f17) - applying special handling\n");
         // Set etd.reg_07 to expected value for absolute mode
@@ -1182,7 +1180,7 @@ int ApplePS2Elan::elantechSetupPS2() {
     }
 
     int absret = elantechSetAbsoluteMode();
-    IOLog("VoodooPS2Elan: [ULTRA DEBUG] elantechSetAbsoluteMode() returned %d\n", absret);
+    DEBUG_LOG("VoodooPS2Elan: elantechSetAbsoluteMode() returned %d\n", absret);
     if (absret) {
         if (needs_reg07_fix) {
             IOLog("VoodooPS2Elan: First absolute mode attempt failed for ETD0180, retrying with reg_07 fix\n");
@@ -1225,7 +1223,7 @@ int ApplePS2Elan::elantechSetupPS2() {
     }
 
     int inputret = elantechSetInputParams();
-    IOLog("VoodooPS2Elan: [ULTRA DEBUG] elantechSetInputParams() returned %d\n", inputret);
+    DEBUG_LOG("VoodooPS2Elan: elantechSetInputParams() returned %d\n", inputret);
     if (inputret) {
         DEBUG_LOG("VoodooPS2: failed to query touchpad range.\n");
         return -1;
@@ -1545,8 +1543,7 @@ int ApplePS2Elan::elantechPacketCheckV4() {
     bool sanity_check;
 
     // CALIBRATION: Complete packet logging for comprehensive analysis
-    IOLog("ELAN_CALIB: FULL_PACKET fw=0x%06x [0]=0x%02x [1]=0x%02x [2]=0x%02x [3]=0x%02x [4]=0x%02x [5]=0x%02x\n", 
-          info.fw_version, packet[0], packet[1], packet[2], packet[3], packet[4], packet[5]);
+    DEBUG_LOG("VoodooPS2Elan: Received packet for fw=0x%06x\n", info.fw_version);
 
     if (info.has_trackpoint && (packet[3] & 0x0f) == 0x06) {
         return PACKET_TRACKPOINT;
@@ -1554,26 +1551,23 @@ int ApplePS2Elan::elantechPacketCheckV4() {
 
     // ETD0180 debug logging but treat as normal V4 hardware
     if (IS_ETD0180()) {
-        IOLog("ETD0180_PACKET_CHECK: RAW[0x%02x 0x%02x 0x%02x 0x%02x 0x%02x 0x%02x]\n", 
-              packet[0], packet[1], packet[2], packet[3], packet[4], packet[5]);
-        IOLog("ETD0180_PACKET_TYPE: [3]&0x03=%d (0=STATUS 1=HEAD 2=MOTION)\n", packet_type);
-        IOLog("ETD0180_PACKET_BITS: [3]&0x1c=0x%02x (should be 0x10) [0]&0x08=0x%02x [0]&0x30=0x%02x [0]&0xe0=0x%02x\n",
-              (packet[3] & 0x1c), (packet[0] & 0x08), (packet[0] & 0x30), (packet[0] & 0xe0));
+        DEBUG_LOG("ETD0180: Processing packet\n");
+        DEBUG_LOG("ETD0180: packet_type=%d\n", packet_type);
         
         // Check all possible multi-touch indicators
         if (packet_type == 0) {
-            IOLog("ETD0180_PACKET: STATUS packet detected\n");
+            DEBUG_LOG("ETD0180: STATUS packet detected\n");
         } else if (packet_type == 1) {
-            IOLog("ETD0180_PACKET: HEAD packet detected! (RARE for ETD0180)\n");
+            DEBUG_LOG("ETD0180: HEAD packet detected! (RARE for ETD0180)\n");
         } else if (packet_type == 2) {
-            IOLog("ETD0180_PACKET: MOTION packet detected\n");
+            DEBUG_LOG("ETD0180: MOTION packet detected\n");
             // Check if this might be a multi-touch MOTION packet
             if ((packet[0] & 0x30) == 0x20) {
-                IOLog("ETD0180_PACKET: Possible SECOND finger MOTION\n");
+                DEBUG_LOG("ETD0180: Possible SECOND finger MOTION\n");
             } else if ((packet[0] & 0x30) == 0x10) {
-                IOLog("ETD0180_PACKET: Possible FIRST finger MOTION\n");
+                DEBUG_LOG("ETD0180: Possible FIRST finger MOTION\n");
             } else if ((packet[0] & 0x30) == 0x30) {
-                IOLog("ETD0180_PACKET: Possible DUAL finger MOTION\n");
+                DEBUG_LOG("ETD0180: Possible DUAL finger MOTION\n");
             }
         }
     }
@@ -1934,9 +1928,9 @@ void ApplePS2Elan::elantechReportAbsoluteV3(int packetType) {
 void ApplePS2Elan::elantechReportAbsoluteV4(int packetType) {
     if (IS_ETD0180()) {
         if (IS_ETD0180()) {
-        IOLog("[ETD0180_PROCESS] PacketType=%d (5=HEAD 6=MOTION 7=STATUS) selected for processing\n", packetType);
+        DEBUG_LOG("[ETD0180_PROCESS] PacketType=%d\n", packetType);
     } else {
-        IOLog("ETD0180_PACKET: type=%d (0=STATUS 1=HEAD 2=MOTION)\n", packetType);
+        DEBUG_LOG("ETD0180: type=%d (0=STATUS 1=HEAD 2=MOTION)\n", packetType);
     }
     }
     
@@ -2010,18 +2004,18 @@ void ApplePS2Elan::processPacketStatusV4() {
         static int status_pkt_num = 0;
         status_pkt_num++;
         
-        IOLog("[ETD0180_STATUS_%04d] RAW[0x%02x 0x%02x 0x%02x 0x%02x 0x%02x 0x%02x]\n",
+        DEBUG_LOG("[ETD0180_STATUS_%04d] RAW[0x%02x 0x%02x 0x%02x 0x%02x 0x%02x 0x%02x]\n",
               status_pkt_num, packet[0], packet[1], packet[2], packet[3], packet[4], packet[5]);
         
         int fingerBits = (packet[0] & 0x30) >> 4;
         fingers = packet[1] & 0x1f;
         
-        IOLog("[ETD0180_STATUS_%04d] finger_count=%d fingerBits=0x%x\n", 
+        DEBUG_LOG("[ETD0180_STATUS_%04d] finger_count=%d fingerBits=0x%x\n", 
               status_pkt_num, fingers, fingerBits);
         
         // Clear all fingers on STATUS packet (finger lift)
         if (fingers == 0) {
-            IOLog("[ETD0180_STATUS_%04d] All fingers lifted - clearing touch state\n", status_pkt_num);
+            DEBUG_LOG("[ETD0180_STATUS_%04d] All fingers lifted - clearing touch state\n", status_pkt_num);
             for (int i = 0; i < ETP_MAX_FINGERS; i++) {
                 virtualFinger[i].touch = false;
             }
@@ -2068,7 +2062,7 @@ void ApplePS2Elan::processPacketHeadV4() {
         static int head_pkt_num = 0;
         head_pkt_num++;
         
-        IOLog("[ETD0180_HEAD_%04d] RAW[0x%02x 0x%02x 0x%02x 0x%02x 0x%02x 0x%02x]\n",
+        DEBUG_LOG("[ETD0180_HEAD_%04d] RAW[0x%02x 0x%02x 0x%02x 0x%02x 0x%02x 0x%02x]\n",
               head_pkt_num, packet[0], packet[1], packet[2], packet[3], packet[4], packet[5]);
         
         // ETD0180: HEAD packets are RARE! Usually uses MOTION packets
@@ -2082,7 +2076,7 @@ void ApplePS2Elan::processPacketHeadV4() {
             id = 0;  // Default to F0
         }
         
-        IOLog("[ETD0180_HEAD_%04d] RARE HEAD packet! id=%d fbits=0x%x\n", 
+        DEBUG_LOG("[ETD0180_HEAD_%04d] RARE HEAD packet! id=%d fbits=0x%x\n", 
               head_pkt_num, id, fingerBits);
     } else {
         // Standard V4 processing for non-ETD0180
@@ -2096,13 +2090,13 @@ void ApplePS2Elan::processPacketHeadV4() {
     // Validate finger ID
     if (id < 0 || id >= ETP_MAX_FINGERS) {
         if (IS_ETD0180()) {
-            IOLog("[ETD0180_HEAD_ERROR] Invalid finger ID %d, dropping packet\n", id);
+            DEBUG_LOG("[ETD0180_HEAD_ERROR] Invalid finger ID %d, dropping packet\n", id);
         }
         return;
     }
     
     if (IS_ETD0180()) {
-        IOLog("[ETD0180_HEAD_FINGER] Processing for finger F%d\n", id);
+        DEBUG_LOG("[ETD0180_HEAD_FINGER] Processing for finger F%d\n", id);
     }
 
     int x = ((packet[1] & 0x0f) << 8) | packet[2];
@@ -2110,7 +2104,7 @@ void ApplePS2Elan::processPacketHeadV4() {
     
     // Coordinate extraction debug for ETD0180
     if (IS_ETD0180()) {
-        IOLog("[ETD0180_COORDS] Finger %d:\n", id);
+        DEBUG_LOG("[ETD0180_COORDS] Finger %d:\n", id);
         IOLog("  - X: packet[1]&0x0f=0x%02x << 8 | packet[2]=0x%02x = %d\n",
               packet[1] & 0x0f, packet[2], x);
         IOLog("  - Y: packet[4]&0x0f=0x%02x << 8 | packet[5]=0x%02x = %d (inverted=%d)\n",
@@ -2121,7 +2115,7 @@ void ApplePS2Elan::processPacketHeadV4() {
     traces = (packet[0] & 0xf0) >> 4;
 
     if (IS_ETD0180()) {
-        IOLog("[ETD0180_TOUCH] F%d: X=%d Y=%d pres=%d traces=%d btn=%d\n", 
+        DEBUG_LOG("[ETD0180_TOUCH] F%d: X=%d Y=%d pres=%d traces=%d btn=%d\n", 
               id, x, y, pres, traces, packet[0] & 0x3);
     }
     
@@ -2139,7 +2133,7 @@ void ApplePS2Elan::processPacketHeadV4() {
     // ETD0180 MULTI-TOUCH EDGE DETECTION: Map hardware edge to logical edge for macOS gestures  
     if (IS_ETD0180() && x > 3000) {  // Near real right edge (3097)
         virtualFinger[id].now.x = info.x_max - 5;  // Map to logical edge
-        IOLog("ETD0180_EDGE_MT: F%d hardware edge X=%d mapped to logical X=%d\n", 
+        DEBUG_LOG("ETD0180_EDGE_MT: F%d hardware edge X=%d mapped to logical X=%d\n", 
               id, x, (int)virtualFinger[id].now.x);
     }
 
@@ -2147,13 +2141,13 @@ void ApplePS2Elan::processPacketHeadV4() {
     if (IS_ETD0180()) {
         // Linux approach: traces is only used for touch area calculation, not finger detection
         // virtualFinger[id].width already set above to traces (same as Linux)
-        IOLog("[ETD0180_LINUX] HEAD packet - id=%d, x=%d, y=%d, traces=%d (touch_area_only)\n", 
+        DEBUG_LOG("[ETD0180_LINUX] HEAD packet - id=%d, x=%d, y=%d, traces=%d (touch_area_only)\n", 
               id, x, y, traces);
     }
 
     // ETD0180: HEAD packets are rare, send immediately
     if (IS_ETD0180()) {
-        IOLog("[ETD0180_HEAD_SEND] Sending HEAD packet data immediately\n");
+        DEBUG_LOG("[ETD0180_HEAD_SEND] Sending HEAD packet data immediately\n");
         sendTouchData();
     } else {
         // Standard V4: Wait for all HEAD packets
@@ -2169,7 +2163,7 @@ void ApplePS2Elan::processPacketMotionV4() {
     
     // ETD0180 LINUX IMPLEMENTATION: Use standard V4 MOTION processing (no special case)
     if (IS_ETD0180()) {
-        IOLog("[ETD0180_LINUX] Using standard V4 motion processing - no special handling\n");
+        DEBUG_LOG("[ETD0180_LINUX] Using standard V4 motion processing - no special handling\n");
     }
     
     // Standard V4 MOTION packet processing (relative deltas)
@@ -2223,7 +2217,7 @@ void ApplePS2Elan::processPacketETD0180() {
     unsigned int x = packet[1] | ((packet[3] & 0x0F) << 8);
     unsigned int y = packet[2] | ((packet[4] & 0x0F) << 8);
     
-    IOLog("ETD0180_COORDS: [0x%02x 0x%02x 0x%02x 0x%02x 0x%02x 0x%02x] X=%d Y=%d L%d/R%d\n", 
+    DEBUG_LOG("ETD0180_COORDS: [0x%02x 0x%02x 0x%02x 0x%02x 0x%02x 0x%02x] X=%d Y=%d L%d/R%d\n", 
           packet[0], packet[1], packet[2], packet[3], packet[4], packet[5], x, y, leftButton, rightButton);
     
     elantechRescale(x, y);
@@ -2240,14 +2234,14 @@ void ApplePS2Elan::processPacketETD0180() {
         virtualFinger[0].now.y = info.y_max - y; // Invert Y for macOS
         virtualFinger[0].button = (leftButton ? 1 : 0) | (rightButton ? 2 : 0);
         
-        IOLog("ETD0180_TOUCH: Valid touch at X=%d Y=%d (inverted Y=%d)\n", 
+        DEBUG_LOG("ETD0180_TOUCH: Valid touch at X=%d Y=%d (inverted Y=%d)\n", 
               x, y, (int)virtualFinger[0].now.y);
     } else {
         // No finger or invalid coordinates
         virtualFinger[0].touch = false;
         virtualFinger[0].prev = virtualFinger[0].now;
         
-        IOLog("ETD0180_NO_TOUCH: finger=%d x=%d y=%d (max X=%d Y=%d)\n", 
+        DEBUG_LOG("ETD0180_NO_TOUCH: finger=%d x=%d y=%d (max X=%d Y=%d)\n", 
               fingerPresent, x, y, info.x_max, info.y_max);
     }
     
@@ -2271,7 +2265,7 @@ void ApplePS2Elan::processPacketETD0180MultiTouch(int packetType) {
     } else if (packetType == 6) { // V4_TAIL = second finger 
         fingerIndex = 1;
     } else {
-        IOLog("ETD0180_MULTITOUCH: Unknown packet type %d\n", packetType);
+        DEBUG_LOG("ETD0180_MULTITOUCH: Unknown packet type %d\n", packetType);
         return;
     }
     
@@ -2282,13 +2276,13 @@ void ApplePS2Elan::processPacketETD0180MultiTouch(int packetType) {
     if (fingerIndex == 1) {  // Second finger - try V3-style layout
         x = ((packet[1] & 0x0f) << 8) | packet[2];    // V3-style: bytes 1,2
         y = (((packet[4] & 0x0f) << 8) | packet[5]);  // V3-style: bytes 4,5
-        IOLog("ETD0180_MT_F1_V3: Testing V3-layout X=%d Y=%d\n", x, y);
+        DEBUG_LOG("ETD0180_MT_F1_V3: Testing V3-layout X=%d Y=%d\n", x, y);
     } else {  // First finger - keep V4-style (working)
         x = packet[1] | ((packet[3] & 0x0F) << 8);    // V4-style: bytes 1,3  
         y = packet[2] | ((packet[4] & 0x0F) << 8);    // V4-style: bytes 2,4
     }
     
-    IOLog("ETD0180_MT_F%d: [0x%02x 0x%02x 0x%02x 0x%02x 0x%02x 0x%02x] X=%d Y=%d type=%d\n", 
+    DEBUG_LOG("ETD0180_MT_F%d: [0x%02x 0x%02x 0x%02x 0x%02x 0x%02x 0x%02x] X=%d Y=%d type=%d\n", 
           fingerIndex, packet[0], packet[1], packet[2], packet[3], packet[4], packet[5], x, y, packetType);
     
     elantechRescale(x, y);
@@ -2304,7 +2298,7 @@ void ApplePS2Elan::processPacketETD0180MultiTouch(int packetType) {
         virtualFinger[fingerIndex].now.x = x;
         virtualFinger[fingerIndex].now.y = info.y_max - y; // Invert Y for macOS
         
-        IOLog("ETD0180_MT_COORDS: finger=%d x=%d y=%d (inverted_y=%d)\n", 
+        DEBUG_LOG("ETD0180_MT_COORDS: finger=%d x=%d y=%d (inverted_y=%d)\n", 
               fingerIndex, x, y, (int)(info.y_max - y));
         
         // Only first finger controls buttons
@@ -2314,24 +2308,24 @@ void ApplePS2Elan::processPacketETD0180MultiTouch(int packetType) {
             virtualFinger[fingerIndex].button = 0;
         }
         
-        IOLog("ETD0180_MT_TOUCH_F%d: Valid touch at X=%d Y=%d (inverted Y=%d)\n", 
+        DEBUG_LOG("ETD0180_MT_TOUCH_F%d: Valid touch at X=%d Y=%d (inverted Y=%d)\n", 
               fingerIndex, x, y, (int)virtualFinger[fingerIndex].now.y);
     } else {
         // No finger or invalid coordinates
         virtualFinger[fingerIndex].touch = false;
         virtualFinger[fingerIndex].prev = virtualFinger[fingerIndex].now;
         
-        IOLog("ETD0180_MT_NO_TOUCH_F%d: finger=%d x=%d y=%d (max X=%d Y=%d)\n", 
+        DEBUG_LOG("ETD0180_MT_NO_TOUCH_F%d: finger=%d x=%d y=%d (max X=%d Y=%d)\n", 
               fingerIndex, fingerPresent, x, y, info.x_max, info.y_max);
     }
     
     // CRITICAL FIX: Only send events for the PRIMARY finger (F0)
     // This prevents cursor jumping when F1 packets arrive
     if (fingerIndex == 0) {
-        IOLog("ETD0180_SENDING_EVENT: Primary finger F0 updated, sending touch data\n");
+        DEBUG_LOG("ETD0180_SENDING_EVENT: Primary finger F0 updated, sending touch data\n");
         sendTouchData();
     } else {
-        IOLog("ETD0180_SKIP_EVENT: Secondary finger F1 updated, NOT sending event\n");
+        DEBUG_LOG("ETD0180_SKIP_EVENT: Secondary finger F1 updated, NOT sending event\n");
     }
 }
 
@@ -2365,7 +2359,7 @@ void ApplePS2Elan::sendTouchData() {
         if (timestamp_ms - firstTapTime > TAP_HOLD_TIMEOUT) {
             tapHoldState = TAP_IDLE;
             dragLockActive = false;
-            IOLog("[ETD0180_TAP] Reset state machine due to timeout\n");
+            DEBUG_LOG("[ETD0180_TAP] Reset state machine due to timeout\n");
         }
     }
 
@@ -2384,11 +2378,11 @@ void ApplePS2Elan::sendTouchData() {
         for (int i = 0; i < ETP_MAX_FINGERS; i++) {
             if (virtualFinger[i].touch) {
                 active_count++;
-                IOLog("ETD0180_SEND: Finger[%d] active at X=%d Y=%d\n", 
+                DEBUG_LOG("ETD0180_SEND: Finger[%d] active at X=%d Y=%d\n", 
                       i, (int)virtualFinger[i].now.x, (int)virtualFinger[i].now.y);
             }
         }
-        IOLog("ETD0180_SEND: Sending %d active fingers to VoodooInput\n", active_count);
+        DEBUG_LOG("ETD0180_SEND: Sending %d active fingers to VoodooInput\n", active_count);
     }
     
     for (int i = 0; i < ETP_MAX_FINGERS; i++) {
@@ -2423,15 +2417,15 @@ void ApplePS2Elan::sendTouchData() {
                 transducer.supportsPressure = true;       // Enable pressure events
                 transducer.currentCoordinates.pressure = 255;  // Maximum pressure for Force Touch
                 transducer.currentCoordinates.width = 10;      // Standard width
-                IOLog("ETD0180_CLICKPAD_MIDDLE: Y=%d < 3800 → FORCE TOUCH (Quick Look/Nachschlagen)\n", y);
+                DEBUG_LOG("ETD0180_CLICKPAD_MIDDLE: Y=%d < 3800 → FORCE TOUCH (Quick Look/Nachschlagen)\n", y);
             } else if (x < 1609) {  // Left half of button area: optimal 50/50 split
                 // LEFT CLICK AREA → Physical Button (Primary Click)
                 transducer.isPhysicalButtonDown = true;
-                IOLog("ETD0180_CLICKPAD_LEFT: X=%d < 1609 → PRIMARY CLICK\n", x);
+                DEBUG_LOG("ETD0180_CLICKPAD_LEFT: X=%d < 1609 → PRIMARY CLICK\n", x);
             } else {  // Right half of button area: x >= 1609
                 // RIGHT CLICK AREA → Realistic 2-finger tap (Secondary Click)
                 transducer.isPhysicalButtonDown = true;  // Both fingers press the button
-                IOLog("ETD0180_CLICKPAD_RIGHT: X=%d >= 1609 → REALISTIC 2-FINGER TAP\n", x);
+                DEBUG_LOG("ETD0180_CLICKPAD_RIGHT: X=%d >= 1609 → REALISTIC 2-FINGER TAP\n", x);
                 
                 // Add realistic second finger for right-click
                 if (transducers_count == 0) {  // Only if this is the first finger
@@ -2454,7 +2448,7 @@ void ApplePS2Elan::sendTouchData() {
                     second_finger.type = FINGER;
                     second_finger.supportsPressure = false;
                     
-                    IOLog("ETD0180_CLICKPAD_2FINGER: Realistic second finger at X=%d Y=%d\n", 
+                    DEBUG_LOG("ETD0180_CLICKPAD_2FINGER: Realistic second finger at X=%d Y=%d\n", 
                           second_finger.currentCoordinates.x, second_finger.currentCoordinates.y);
                     
                     // Increment counter after setting up second finger
@@ -2490,7 +2484,7 @@ void ApplePS2Elan::sendTouchData() {
             // For clickpads: Don't override Force Touch if already set (middle area)
             // isPhysicalButtonDown and supportsPressure already set by clickpad logic above
             if (!transducer.supportsPressure) {
-                IOLog("ETD0180_CLICKPAD_MODE: Using normal button events\n");
+                DEBUG_LOG("ETD0180_CLICKPAD_MODE: Using normal button events\n");
             }
         } else {
             // For traditional trackpads with physical buttons: Use force touch if enabled
@@ -2658,17 +2652,8 @@ void ApplePS2Elan::packetReady() {
                 // Normal V4 handling
                 {
                     UInt8 *packet = _ringBuffer.tail();
-                    if (IS_ETD0180()) {
-                        // ULTRA logging for ETD0180
-                        static int irq_cnt = 0;
-                        irq_cnt++;
-                        IOLog("[ETD0180_IRQ_%05d] RAW[0x%02x 0x%02x 0x%02x 0x%02x 0x%02x 0x%02x] type=%d fbits=0x%x\n", 
-                              irq_cnt, packet[0], packet[1], packet[2], packet[3], packet[4], packet[5], 
-                              packet[3] & 0x03, (packet[0] & 0x30) >> 4);
-                    } else {
-                        IOLog("VoodooPS2Elan: RAW_PACKET [0x%02x 0x%02x 0x%02x 0x%02x 0x%02x 0x%02x] packet[3]&0x03=%d\n", 
-                              packet[0], packet[1], packet[2], packet[3], packet[4], packet[5], packet[3] & 0x03);
-                    }
+                    DEBUG_LOG("VoodooPS2Elan: Processing V4 packet [%02x %02x %02x %02x %02x %02x]\n", 
+                              packet[0], packet[1], packet[2], packet[3], packet[4], packet[5]);
                 }
                 packetType = elantechPacketCheckV4();
                 INTERRUPT_LOG("VoodooPS2Elan: Packet Type %d\n", packetType);
@@ -2716,7 +2701,7 @@ void ApplePS2Elan::processTapAndHold(uint64_t timestamp) {
     // ETD0180 Tap-and-Hold implementation for drag without physical buttons
     // State machine: TAP_IDLE → FIRST_TAP_DOWN → WAITING_SECOND_TAP → SECOND_TAP_DOWN → DRAG_ACTIVE
     
-    IOLog("[ETD0180_TAP] processTapAndHold() called, fw=0x%x\n", info.fw_version);
+    DEBUG_LOG("[ETD0180_TAP] processTapAndHold() called, fw=0x%x\n", info.fw_version);
     
     if (!IS_ETD0180()) {
         return;  // Only for ETD0180
@@ -2746,7 +2731,7 @@ void ApplePS2Elan::processTapAndHold(uint64_t timestamp) {
     };
     
     // DEBUG: Always log current state  
-    IOLog("[ETD0180_TAP] DEBUG: threshold=%u, activeFingers=%d, primaryFinger=%d, state=%d\n", 
+    DEBUG_LOG("[ETD0180_TAP] DEBUG: threshold=%u, activeFingers=%d, primaryFinger=%d, state=%d\n", 
           TAP_DISTANCE_THRESHOLD, activeFingers, primaryFinger, (int)tapHoldState);
     
     switch (tapHoldState) {
@@ -2756,9 +2741,9 @@ void ApplePS2Elan::processTapAndHold(uint64_t timestamp) {
                 tapHoldState = FIRST_TAP_DOWN;
                 firstTapTime = timestamp_ms;
                 firstTapPos = virtualFinger[primaryFinger].now;
-                IOLog("[ETD0180_TAP] First tap down at (%d,%d)\n", firstTapPos.x, firstTapPos.y);
+                DEBUG_LOG("[ETD0180_TAP] First tap down at (%d,%d)\n", firstTapPos.x, firstTapPos.y);
             } else if (activeFingers > 0) {
-                IOLog("[ETD0180_TAP] TAP_IDLE: Not starting tap (activeFingers=%d, primaryFinger=%d)\n", 
+                DEBUG_LOG("[ETD0180_TAP] TAP_IDLE: Not starting tap (activeFingers=%d, primaryFinger=%d)\n", 
                       activeFingers, primaryFinger);
             }
             break;
@@ -2771,11 +2756,11 @@ void ApplePS2Elan::processTapAndHold(uint64_t timestamp) {
                     // Valid first tap - wait for second tap
                     tapHoldState = WAITING_SECOND_TAP;
                     firstTapTime = timestamp_ms;  // Reset timer for second tap timeout
-                    IOLog("[ETD0180_TAP] First tap up (duration=%llu ms), waiting for second tap\n", tapDuration);
+                    DEBUG_LOG("[ETD0180_TAP] First tap up (duration=%llu ms), waiting for second tap\n", tapDuration);
                 } else {
                     // Too long - reset
                     tapHoldState = TAP_IDLE;
-                    IOLog("[ETD0180_TAP] First tap too long (%llu ms), reset (max=%llu)\n", 
+                    DEBUG_LOG("[ETD0180_TAP] First tap too long (%llu ms), reset (max=%llu)\n", 
                           tapDuration, (uint64_t)MAX_FIRST_TAP_DURATION);
                 }
             } else if (activeFingers == 1 && primaryFinger >= 0) {
@@ -2784,14 +2769,14 @@ void ApplePS2Elan::processTapAndHold(uint64_t timestamp) {
                 if (distSquared > (TAP_DISTANCE_THRESHOLD * TAP_DISTANCE_THRESHOLD)) {
                     // Too much movement - reset
                     tapHoldState = TAP_IDLE;
-                    IOLog("[ETD0180_TAP] Too much movement during first tap, reset (dist=%u) start=(%d,%d) now=(%d,%d)\n",
+                    DEBUG_LOG("[ETD0180_TAP] Too much movement during first tap, reset (dist=%u) start=(%d,%d) now=(%d,%d)\n",
                           distSquared, firstTapPos.x, firstTapPos.y, 
                           virtualFinger[primaryFinger].now.x, virtualFinger[primaryFinger].now.y);
                 }
             } else {
                 // Multiple fingers - reset
                 tapHoldState = TAP_IDLE;
-                IOLog("[ETD0180_TAP] Multiple fingers during first tap, reset\n");
+                DEBUG_LOG("[ETD0180_TAP] Multiple fingers during first tap, reset\n");
             }
             break;
             
@@ -2807,23 +2792,23 @@ void ApplePS2Elan::processTapAndHold(uint64_t timestamp) {
                     tapHoldState = SECOND_TAP_DOWN;
                     secondTapTime = timestamp_ms;
                     secondTapPos = virtualFinger[primaryFinger].now;
-                    IOLog("[ETD0180_TAP] Second tap down at (%d,%d), time_delta=%llu ms\n", 
+                    DEBUG_LOG("[ETD0180_TAP] Second tap down at (%d,%d), time_delta=%llu ms\n", 
                           secondTapPos.x, secondTapPos.y, timeBetweenTaps);
                 } else {
                     // Invalid second tap - reset
                     tapHoldState = TAP_IDLE;
-                    IOLog("[ETD0180_TAP] Invalid second tap (time=%llu, dist=%u) first=(%d,%d) second=(%d,%d), reset\n", 
+                    DEBUG_LOG("[ETD0180_TAP] Invalid second tap (time=%llu, dist=%u) first=(%d,%d) second=(%d,%d), reset\n", 
                           timeBetweenTaps, distSquared, firstTapPos.x, firstTapPos.y, 
                           virtualFinger[primaryFinger].now.x, virtualFinger[primaryFinger].now.y);
                 }
             } else if (activeFingers > 1) {
                 // Multiple fingers - reset
                 tapHoldState = TAP_IDLE;
-                IOLog("[ETD0180_TAP] Multiple fingers, reset\n");
+                DEBUG_LOG("[ETD0180_TAP] Multiple fingers, reset\n");
             } else if (timestamp_ms - firstTapTime > TAP_HOLD_TIMEOUT) {
                 // Timeout - reset
                 tapHoldState = TAP_IDLE;
-                IOLog("[ETD0180_TAP] Second tap timeout, reset\n");
+                DEBUG_LOG("[ETD0180_TAP] Second tap timeout, reset\n");
             }
             break;
             
@@ -2831,7 +2816,7 @@ void ApplePS2Elan::processTapAndHold(uint64_t timestamp) {
             if (activeFingers == 0) {
                 // Finger lifted before hold threshold - reset
                 tapHoldState = TAP_IDLE;
-                IOLog("[ETD0180_TAP] Second tap released too early, reset\n");
+                DEBUG_LOG("[ETD0180_TAP] Second tap released too early, reset\n");
             } else if (activeFingers == 1 && primaryFinger >= 0) {
                 uint64_t holdDuration = timestamp_ms - secondTapTime;
                 uint32_t distSquared = calculateDistance(secondTapPos, virtualFinger[primaryFinger].now);
@@ -2840,16 +2825,16 @@ void ApplePS2Elan::processTapAndHold(uint64_t timestamp) {
                     // Hold threshold reached - activate drag!
                     tapHoldState = DRAG_ACTIVE;
                     dragLockActive = true;
-                    IOLog("[ETD0180_TAP] DRAG ACTIVATED! Hold duration=%llu ms\n", holdDuration);
+                    DEBUG_LOG("[ETD0180_TAP] DRAG ACTIVATED! Hold duration=%llu ms\n", holdDuration);
                 } else if (distSquared > (TAP_DISTANCE_THRESHOLD * TAP_DISTANCE_THRESHOLD)) {
                     // Too much movement before hold threshold - reset
                     tapHoldState = TAP_IDLE;
-                    IOLog("[ETD0180_TAP] Movement before hold threshold, reset\n");
+                    DEBUG_LOG("[ETD0180_TAP] Movement before hold threshold, reset\n");
                 }
             } else {
                 // Multiple fingers - reset
                 tapHoldState = TAP_IDLE;
-                IOLog("[ETD0180_TAP] Multiple fingers during second tap, reset\n");
+                DEBUG_LOG("[ETD0180_TAP] Multiple fingers during second tap, reset\n");
             }
             break;
             
@@ -2858,12 +2843,12 @@ void ApplePS2Elan::processTapAndHold(uint64_t timestamp) {
                 // Finger lifted - end drag
                 tapHoldState = TAP_IDLE;
                 dragLockActive = false;
-                IOLog("[ETD0180_TAP] DRAG ENDED - finger lifted\n");
+                DEBUG_LOG("[ETD0180_TAP] DRAG ENDED - finger lifted\n");
             } else if (activeFingers > 1) {
                 // Multiple fingers - end drag
                 tapHoldState = TAP_IDLE;
                 dragLockActive = false;
-                IOLog("[ETD0180_TAP] DRAG ENDED - multiple fingers\n");
+                DEBUG_LOG("[ETD0180_TAP] DRAG ENDED - multiple fingers\n");
             }
             // During drag, keep dragLockActive = true to simulate button press
             break;
@@ -2872,6 +2857,6 @@ void ApplePS2Elan::processTapAndHold(uint64_t timestamp) {
     // Apply drag lock to primary finger if active
     if (dragLockActive && primaryFinger >= 0) {
         virtualFinger[primaryFinger].button = 1;  // Simulate left button press
-        IOLog("[ETD0180_TAP] Drag active - simulating button press on finger %d\n", primaryFinger);
+        DEBUG_LOG("[ETD0180_TAP] Drag active - simulating button press on finger %d\n", primaryFinger);
     }
 }

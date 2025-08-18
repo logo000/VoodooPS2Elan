@@ -1,69 +1,140 @@
-VoodooPS2
-=========
+# VoodooPS2Elan - Enhanced ELAN Trackpad Driver for macOS
 
-[![Build Status](https://github.com/acidanthera/VoodooPS2/actions/workflows/main.yml/badge.svg?branch=master)](https://github.com/acidanthera/VoodooPS2/actions) [![Scan Status](https://scan.coverity.com/projects/22190/badge.svg?flat=1)](https://scan.coverity.com/projects/22190)
+A specialized VoodooPS2 kernel extension that provides comprehensive support for ELAN touchpads on older laptops, delivering a native macOS experience with proper multi-touch gestures, edge detection, and clickpad functionality.
 
-New **VoodooPS2Trackpad** uses VoodooInput's Magic Trackpad II emulation in order to use macOS native driver instead of handling all gestures itself. This enables the use of any from one to four finger gestures defined by Apple including:
-* Look up & data detectors
-* Secondary click (*with two fingers, in bottom left corner\*, in bottom right corner\**)
-* Tap to click
-* Scrolling
-* Zoom in or out
-* Smart zoom
-* Rotate
-* Swipe between pages
-* Swipe between full-screen apps (*with three or four fingers*)
-* Notification Centre
-* Mission Control (*with three or four fingers*)
-* App Exposé (*with three or four fingers*)
-* Dragging with or without drag lock (*configured in 'Accessibility'/'Universal Access' prefpane*)
-* Three finger drag (*configured in 'Accessibility'/'Universal Access' prefpane, may work unreliably\*\**)
-* Launchpad (*may work unreliably*)
-* Show Desktop (*may work unreliably*)
-* Screen zoom (*configured in 'Accessibility'/'Universal Access' -> Zoom -> Advanced -> Controls -> Use trackpad gesture to zoom*)
+## 🎯 Purpose
 
-It also supports **BetterTouchTool**.
+This driver was created to solve the persistent issues with ELAN trackpads on older laptops running macOS, particularly the ETD0180 chipset. The standard ApplePS2SmartTouchpad driver proved unreliable and buggy, failing to provide basic functionality like edge detection for macOS gestures and proper button area mapping.
 
-In addition this kext supports **Force Touch** emulation (*configured in `Info.plist`*):
-* **Mode 0** – Force Touch emulation is disabled (*you can also disable it in **System Preferences** without setting the mode*).
-* **Mode 1** – Force Touch emulation using a physical button: on ClickPads (touchpads which have the whole surface clickable (the physical button is inside the laptop under the bottom of touchpad)), the physical button can be remapped to Force Touch. In such mode a tap is a regular click, if **Tap to click** gesture is enabled in **System Preferences**, and a click is a Force Touch. This mode is convenient for people who usually tap on the touchpad, not click.
-* **Mode 2** – *'wide tap'*: for Force Touch one needs to increase the area of a finger touching the touchpad\*\*\*. The necessary width can be set in `Info.plist`.
-* **Mode 3** – pressure value is passed to the system as is; this mode shouldn't be used.
-* **Mode 4** (*by @Tarik02*) – pressure is passed to the system using the following formula: ![formula](Docs/force_touch.png)  
-The parameters in the formula are configured using `ForceTouchCustomUpThreshold`, `ForceTouchCustomDownThreshold` and `ForceTouchCustomPower` keys in `Info.plist` or configuration SSDT. Note that `ForceTouchCustomDownThreshold` is the *upper* limit on the pressure value and vice versa, because it corresponds to the touchpad being fully pressed *down*.
+## 📖 Background Story
 
-For Elan touchpad, only mode 0 and mode 1 are supported.
+This project was born out of necessity - developed over 4 weeks to restore proper trackpad functionality on my mother's laptop. The original ApplePS2SmartTouchpad was causing constant issues with basic trackpad operations, making the laptop nearly unusable for everyday tasks. The goal was to create a working VoodooPS2 version that would enable a true Mac experience even for older ELAN trackpads that are often overlooked by modern drivers.
 
-For ALPS touchpads, V1, V2 and V6 do not support Force Touch. V3, V4 and V5 only support mode 0, 2, 3 and 4. V7 only supports mode 0 and 1. V8 supports all modes.
+## ✨ Key Features
 
-## Installation and compilation
+### 🎯 ETD0180 Chipset Support
+- **Multi-touch Edge Detection**: Proper edge swipe recognition for macOS Notification Center and other system gestures
+- **Hardware-to-Logical Coordinate Mapping**: Seamless translation between trackpad hardware coordinates and macOS logical coordinates
+- **Y-Coordinate Inversion**: Correct coordinate orientation for natural gesture recognition
+- **Firmware Support**: Optimized for ETD0180 firmware version 0x381f17
 
-For VoodooPS2Trackpad.kext to work multitouch interface engine, named VoodooInput.kext, is required.
+### 🖱️ Advanced Clickpad Functionality
+- **Three-Zone Button Areas**: Intelligent left, right, and middle-click detection based on finger position
+- **Optimized Button Boundaries**: Live-tested coordinate mapping for accurate click recognition
+- **Force Touch Simulation**: Middle-click area provides Force Touch events for Quick Look and other macOS features
+- **Realistic Two-Finger Right-Click**: Natural secondary click simulation
 
-- For released binaries a compatible version of VoodooInput.kext is already included in the PlugIns directory.
-- For custom compiled versions VoodooInput.kext bootstrapping is required prior to compilation.
-    By default Xcode project will do this automatically. If you prefer to have your own control over the
-    process execute the following command in the project directory to have VoodooInput bootstrapped:
+### 🎮 Gesture Support
+- **Edge Swipes**: Right-edge swipes for Notification Center
+- **Multi-finger Gestures**: Support for various macOS trackpad gestures
+- **Smooth Scrolling**: Natural scrolling experience with proper acceleration
 
-    ```
-    src=$(/usr/bin/curl -Lfs https://raw.githubusercontent.com/acidanthera/VoodooInput/master/VoodooInput/Scripts/bootstrap.sh) && eval "$src" || exit 1
-    ```
+### 🔧 Smart Coordination Prevention
+- **Y-Inversion Stability**: Prevents cursor jumping and erratic movement
+- **Edge Detection Workaround**: Reliable edge recognition without coordinate corruption
+- **Input System Stability**: Prevents keyboard/trackpad freezing issues
 
-## Touchpad and Keyboard Input Toggle
+## 🛠️ Technical Improvements
 
-This kext supports disabling touch input by pressing the Printscreen key on your keyboard, or the touchpad disable key on many laptops.  Simply press the key to toggle touchpad input off and again to toggle it back on.
+### Coordinate System Fixes
+- **Hardware Edge Mapping**: Maps X > 3000 to logical edge coordinates for gesture recognition
+- **Boundary Optimization**: Y < 3800 for middle-click area (optimized from live testing)
+- **Perfect Button Areas**: X < 1609 for left-click, X ≥ 1609 for right-click
 
-In addition, for 2-in-1 systems that do not support disabling the keyboard in hardware while in tablet mode you may toggle keyboard input off and on by holding option(Windows) and pressing the Printscreen key.  Repeat the keypress to re-enable keyboard input.  These settings are runtime only and do not persist across a reboot.
+### Multi-touch Enhancements
+- **Real-time Finger Tracking**: Accurate multi-finger detection and tracking
+- **Pressure Sensitivity**: Proper pressure reporting for Force Touch events
+- **Touch Area Calculations**: Realistic finger width and contact area simulation
 
-## Credits:
-* VoodooPS2Controller etc. – turbo, mackerintel, @RehabMan, nhand42, phb, Chunnan, jape, bumby (see RehabMan's repository).
-* Magic Trackpad 2 reverse engineering and implementation – https://github.com/alexandred/VoodooI2C project team.
-* VoodooPS2Trackpad integration – @kprinssu.
-* Force Touch emulation and finger renumbering algorithm** – @usr-sse2.
-* Elan touchpad driver – linux kernel contributors, @kprinssu, @BAndysc and @hieplpvip
+### Stability Improvements
+- **Kernel Extension Safety**: Comprehensive error handling and memory management
+- **Input Validation**: Robust coordinate and event validation
+- **System Integration**: Seamless interaction with VoodooInput framework
 
-\* On my touchpad this gesture was practically impossible to perform with the old VoodooPS2Trackpad. Now it works well.
+## 📋 Compatibility
 
-\*\* Due to the limitations of PS/2 bus, Synaptics touchpad reports only the number of fingers and coordinates of two of them to the computer. When there are two fingers on the touchpad and third finger is added, a 'jump' may happen, because the coordinates of one of the fingers are replaced with the coordinates of the added finger. Finger renumbering algorithm estimates the distance from old coordinates to new ones in order to hide this 'jump' from the OS ~~and to calculate approximate position of the 'hidden' finger, in assumption that fingers move together in parallel to each other~~. Now third and fourth fingers are reported at the same position as one of the first two fingers. It allows Launchpad/Show desktop gesture to work more reliably.
+### Supported Hardware
+- **Primary**: ELAN ETD0180 Touchpad (Firmware 0x381f17)
+- **Architecture**: x86_64 Intel-based Macs
+- **Bootloader**: OpenCore (recommended)
 
-\*\*\* The touchpad reports both finger width (ranged from 4 to 15) and pressure (ranged from 0 to 255), but in practice the measured width is almost always 4, and the reported pressure depends more on actual touch width than on actual pressure.
+### Important Technical Note
+**ETD0180 Packet Format**: This specific ELAN version uses a different packet format compared to standard v4 protocol. The driver includes a mandatory patch (already active in source code) to operate the trackpad in absolute mode instead of relative mode. This patch is essential for proper multi-touch functionality and coordinate reporting.
+
+### System Requirements
+- macOS 10.10+ (Yosemite and later)
+- VoodooInput.kext (plugin version recommended)
+- Compatible PS/2 controller
+
+## 🚀 Installation
+
+### Prerequisites
+1. OpenCore bootloader
+2. Disable ApplePS2SmartTouchpad and other conflicting trackpad drivers
+3. VoodooInput.kext properly installed
+
+### Installation Steps
+1. Copy `VoodooPS2Controller.kext` to your `/EFI/OC/Kexts/` directory
+2. Add the kext to your `config.plist` with proper loading order:
+   - VoodooPS2Controller.kext
+   - VoodooInput.kext (as plugin)
+   - VoodooPS2Keyboard.kext
+   - VoodooPS2Trackpad.kext
+3. Restart and test functionality
+
+## 🔧 Configuration
+
+The driver includes optimized defaults based on extensive testing:
+- Middle-click boundary: Y < 3800
+- Button split: X = 1609 (50/50 left/right)
+- Edge detection: X > 3000 triggers logical edge mapping
+
+## ⚠️ Current Status
+
+While this driver provides a **very good, almost error-free experience**, it's important to note that:
+
+- **Not everything is perfect** - Some edge cases and specific gestures may need refinement
+- **Continuous improvement** - The driver can and will be improved based on user feedback and testing
+- **Hardware variations** - Different ELAN firmware versions may require additional optimizations
+- **Beta status** - While stable in daily use, consider this an actively developed solution
+
+The driver has been extensively tested and provides reliable daily-use functionality, but users should expect occasional minor issues that can be addressed through future updates.
+
+## 🐛 Troubleshooting
+
+### Common Issues
+- **Keyboard/Trackpad Freeze**: Ensure clean build and proper kext installation
+- **Edge Swipes Not Working**: Verify VoodooInput plugin is loaded correctly
+- **Wrong Click Areas**: Check coordinate logging in Console for calibration
+
+### Debug Information
+Enable debug logging in Console and filter for "ETD0180" to see real-time coordinate and event information.
+
+## 🤝 Contributing
+
+This driver was developed through extensive source code analysis and testing. Contributions are welcome, especially for:
+- Additional ELAN chipset support
+- Gesture recognition improvements
+- Stability enhancements
+- Firmware version compatibility
+
+## 📄 License
+
+Based on VoodooPS2Controller by Acidanthera and RehabMan. Licensed under GPL.
+
+## 🙏 Acknowledgments
+
+- **Acidanthera Team**: For the VoodooInput framework and VoodooPS2 foundation
+- **RehabMan**: For original VoodooPS2 development and documentation
+- **The macOS Hackintosh Community**: For testing and feedback
+
+## 📈 Project Timeline
+
+- **Development Time**: 4 weeks of intensive source code modification and testing
+- **Testing Phase**: Live coordinate mapping and boundary optimization
+- **Iterations**: Multiple rebuild cycles to achieve stability
+- **Goal Achieved**: Fully functional Mac trackpad experience on older hardware
+
+---
+
+*This driver transforms older ELAN trackpads from frustrating hardware into smooth, responsive input devices that feel native to macOS, while acknowledging there's always room for improvement.*
