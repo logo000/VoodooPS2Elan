@@ -155,6 +155,7 @@ ApplePS2Elan *ApplePS2Elan::probe(IOService *provider, SInt32 *score) {
     DEBUG_LOG("VoodooPS2Elan: samples: %x %x %x\n", info.capabilities[0], info.capabilities[1], info.capabilities[2]);
     DEBUG_LOG("VoodooPS2Elan: hw_version: %x\n", info.hw_version);
     DEBUG_LOG("VoodooPS2Elan: fw_version: %x\n", info.fw_version);
+    IOLog("VoodooPS2Elan: FIRMWARE_VERSION=0x%06x IS_ETD0180=%s\n", info.fw_version, IS_ETD0180() ? "YES" : "NO");
     DEBUG_LOG("VoodooPS2Elan: x_min: %d\n", info.x_min);
     DEBUG_LOG("VoodooPS2Elan: y_min: %d\n", info.y_min);
     DEBUG_LOG("VoodooPS2Elan: x_max: %d\n", info.x_max);
@@ -264,6 +265,15 @@ bool ApplePS2Elan::start(IOService *provider) {
     registerHIDPointerNotifications();
 
     pWorkLoop->addEventSource(_cmdGate);
+    
+    // Setup button timer event source for middle button simulation
+    _buttonTimer = IOTimerEventSource::timerEventSource(this, OSMemberFunctionCast(IOTimerEventSource::Action, this, &ApplePS2Elan::onButtonTimer));
+    if (_buttonTimer) {
+        pWorkLoop->addEventSource(_buttonTimer);
+        IOLog("VoodooPS2Elan: Button timer setup SUCCESS\n");
+    } else {
+        IOLog("VoodooPS2Elan: FAILED to create button timer\n");
+    }
 
     elantechSetupPS2();
 
@@ -304,12 +314,16 @@ void ApplePS2Elan::stop(IOService *provider) {
     // Disable the touchpad
     setTouchPadEnable(false);
 
-    // Release command gate
+    // Release command gate and button timer
     IOWorkLoop *pWorkLoop = getWorkLoop();
     if (pWorkLoop) {
         if (_cmdGate) {
             pWorkLoop->removeEventSource(_cmdGate);
             OSSafeReleaseNULL(_cmdGate);
+        }
+        if (_buttonTimer) {
+            pWorkLoop->removeEventSource(_buttonTimer);
+            OSSafeReleaseNULL(_buttonTimer);
         }
     }
 
@@ -350,10 +364,12 @@ void ApplePS2Elan::setParamPropertiesGated(OSDictionary *config) {
         {"MouseResolution",                    &_mouseResolution},
         {"MouseSampleRate",                    &_mouseSampleRate},
         {"ForceTouchMode",                     (int*)&_forceTouchMode},
+        {"FakeMiddleButton",                   &_fakemiddlebutton},
     };
 
     const struct {const char *name; uint64_t *var;} int64vars[] = {
         {"QuietTimeAfterTyping",               &maxaftertyping},
+        {"MiddleClickTime",                    &_maxmiddleclicktime},
     };
 
     const struct {const char *name; bool *var;} boolvars[] = {
@@ -903,11 +919,11 @@ int ApplePS2Elan::elantechQueryInfo() {
             DEBUG_LOG("VoodooPS2Elan: failed to query resolution data.\n");
         }
         
-        // ETD0180 CURSOR SPEED FIX: DECREASE resolution for FASTER cursor
+        // ETD0180 BALANCED RESOLUTION: Optimal balance between smoothness and responsiveness
         if (IS_ETD0180()) {  // ETD0180
-            info.x_res = 8;   // Decrease from 15 to 8 for EVEN FASTER cursor
-            info.y_res = 8;   // Decrease from 15 to 8 for EVEN FASTER cursor
-            IOLog("ETD0180_FIX: Decreased resolution to x_res=%d y_res=%d for ULTRA FAST cursor\n", 
+            info.x_res = 6;   // TEST: Resolution 6 with Resolution 5 dimensions to isolate the problem
+            info.y_res = 6;   // TEST: Resolution 6 with Resolution 5 dimensions to isolate the problem
+            IOLog("ETD0180_FIX: Balanced resolution x_res=%d y_res=%d for optimal smoothness + responsiveness\n", 
                   info.x_res, info.y_res);
         }
     }
@@ -1065,8 +1081,25 @@ int ApplePS2Elan::elantechSetInputParams() {
     setProperty(VOODOO_INPUT_LOGICAL_MAX_X_KEY, info.x_max - info.x_min, 32);
     setProperty(VOODOO_INPUT_LOGICAL_MAX_Y_KEY, info.y_max - info.y_min, 32);
 
-    setProperty(VOODOO_INPUT_PHYSICAL_MAX_X_KEY, (info.x_max - info.x_min + 1) * 100 / info.x_res, 32);
-    setProperty(VOODOO_INPUT_PHYSICAL_MAX_Y_KEY, (info.y_max - info.y_min + 1) * 100 / info.y_res, 32);
+    // EXPERIMENTAL: Test if Resolution 6 problem is caused by the physical dimension value 68266
+    // Normal calculation would be: (info.x_max - info.x_min + 1) * 100 / info.x_res
+    UInt32 physical_max_x = (info.x_max - info.x_min + 1) * 100 / info.x_res;
+    UInt32 physical_max_y = (info.y_max - info.y_min + 1) * 100 / info.y_res;
+    
+    // CLOSER TO 5: Moving closer to Resolution 5 for less lag
+    // Resolution 5 → 81920 → VoodooInput sees 16384 (0x4000)
+    // 25000 is closer to 16384 = less laggy, closer to Resolution 5 feel
+    if (info.x_res == 6) {
+        physical_max_x = 25000;  // Closer to Resolution 5, less laggy
+        physical_max_y = 25000;  // Keep proportional  
+        IOLog("ELAN_CLOSER_TO_5: Using 25000 - closer to Resolution 5, less laggy\n");
+    }
+    
+    setProperty(VOODOO_INPUT_PHYSICAL_MAX_X_KEY, physical_max_x, 32);
+    setProperty(VOODOO_INPUT_PHYSICAL_MAX_Y_KEY, physical_max_y, 32);
+    
+    IOLog("ELAN_DIMENSIONS: x_res=%d physical_max_x=%d physical_max_y=%d\n", 
+          info.x_res, physical_max_x, physical_max_y);
 
     setProperty(VOODOO_INPUT_TRANSFORM_KEY, 0ull, 32);
     setProperty("VoodooInputSupported", kOSBooleanTrue);
@@ -1516,8 +1549,18 @@ void ApplePS2Elan::elantechRescale(unsigned int &x, unsigned int &y) {
         setProperty(VOODOO_INPUT_LOGICAL_MAX_X_KEY, info.x_max - info.x_min, 32);
         setProperty(VOODOO_INPUT_LOGICAL_MAX_Y_KEY, info.y_max - info.y_min, 32);
 
-        setProperty(VOODOO_INPUT_PHYSICAL_MAX_X_KEY, (info.x_max - info.x_min + 1) * 100 / info.x_res, 32);
-        setProperty(VOODOO_INPUT_PHYSICAL_MAX_Y_KEY, (info.y_max - info.y_min + 1) * 100 / info.y_res, 32);
+        // EXPERIMENTAL: Test if Resolution 6 problem is caused by the physical dimension value 68266
+        UInt32 physical_max_x = (info.x_max - info.x_min + 1) * 100 / info.x_res;
+        UInt32 physical_max_y = (info.y_max - info.y_min + 1) * 100 / info.y_res;
+        
+        // OPTIMAL: Resolution 5.8 equivalent - creates VoodooInput-friendly dimension value 70620
+        if (info.x_res == 6) {
+            physical_max_x = 70620;  // Resolution 5.8 equivalent: 4096*100/5.8 = 70620
+            physical_max_y = 70620;  // Keep proportional
+        }
+        
+        setProperty(VOODOO_INPUT_PHYSICAL_MAX_X_KEY, physical_max_x, 32);
+        setProperty(VOODOO_INPUT_PHYSICAL_MAX_Y_KEY, physical_max_y, 32);
 
         if (voodooInputInstance) {
             VoodooInputDimensions dims = {
@@ -1531,8 +1574,7 @@ void ApplePS2Elan::elantechRescale(unsigned int &x, unsigned int &y) {
 
         IOLog("VoodooPS2Elan: rescaled logical range to %dx%d, physical %dx%d\n",
             info.x_max - info.x_min, info.y_max - info.y_min,
-            (info.x_max - info.x_min + 1) * 100 / info.x_res,
-            (info.y_max - info.y_min + 1) * 100 / info.y_res);
+            physical_max_x, physical_max_y);
     }
 }
 
@@ -2130,11 +2172,23 @@ void ApplePS2Elan::processPacketHeadV4() {
     virtualFinger[id].now.x = x;
     virtualFinger[id].now.y = y;
     
-    // ETD0180 MULTI-TOUCH EDGE DETECTION: Map hardware edge to logical edge for macOS gestures  
-    if (IS_ETD0180() && x > 3000) {  // Near real right edge (3097)
-        virtualFinger[id].now.x = info.x_max - 5;  // Map to logical edge
-        DEBUG_LOG("ETD0180_EDGE_MT: F%d hardware edge X=%d mapped to logical X=%d\n", 
-              id, x, (int)virtualFinger[id].now.x);
+    // CALIBRATED EDGE DETECTION: Lowered threshold for easier triggering
+    // User reports being at physical edge but 85% threshold too high
+    if (info.x_max > 1000) {  // Sanity check - reasonable trackpad size
+        // Reduced threshold - last 30% of trackpad for easier edge detection
+        uint32_t edge_threshold = (uint32_t)(info.x_max * 0.70f);  // Last 30%
+        if (x >= edge_threshold) {  // Near right edge
+            virtualFinger[id].now.x = info.x_max - 8;  // Map close to edge
+            IOLog("ELAN_EDGE_CALIBRATED: F%d X=%d->%d (threshold=%d, x_max=%d)\n", 
+                  id, x, (int)virtualFinger[id].now.x, edge_threshold, info.x_max);
+        }
+        
+        // Debug: Log current position vs threshold
+        static int debug_counter = 0;
+        if (++debug_counter % 30 == 0) {
+            IOLog("ELAN_EDGE_DEBUG: x_max=%d, current_x=%d, threshold=%d (70%%), triggered=%s\n", 
+                  info.x_max, x, edge_threshold, (x >= edge_threshold) ? "YES" : "NO");
+        }
     }
 
     // ETD0180 LINUX IMPLEMENTATION - Use traces only for touch area like Linux kernel
@@ -2350,18 +2404,7 @@ void ApplePS2Elan::sendTouchData() {
     // Use mach_absolute_time directly (already in appropriate units for comparison)
     // Note: mach_absolute_time units are platform-dependent but consistent for comparisons
 
-    // ETD0180 Tap-and-Hold processing - MUST be called BEFORE keyboard check!
-    processTapAndHold(timestamp);
-    
-    // ETD0180 Reset State Machine on timeout to prevent stuck states
-    if (IS_ETD0180() && tapHoldState == WAITING_SECOND_TAP) {
-        uint64_t timestamp_ms = timestamp / 1000000ULL;
-        if (timestamp_ms - firstTapTime > TAP_HOLD_TIMEOUT) {
-            tapHoldState = TAP_IDLE;
-            dragLockActive = false;
-            DEBUG_LOG("[ETD0180_TAP] Reset state machine due to timeout\n");
-        }
-    }
+    // Simple button processing - no complex tap-and-hold state machine
 
     // Ignore input for specified time after keyboard/trackpoint usage
     if (timestamp - keytime < maxaftertyping) {
@@ -2538,29 +2581,31 @@ void ApplePS2Elan::sendTouchData() {
         IOLog("ELAN_VOODINPUT_ERROR: voodooInputInstance is NULL - cannot send events!\n");
     }
 
+    // Process hardware buttons with middle button simulation
     if (!info.is_buttonpad) {
+        // Raw hardware buttons
+        UInt32 rawButtons = (leftButton ? 1 : 0) | (rightButton ? 2 : 0);
+        
+        // Apply middle button state machine
+        UInt32 processedButtons = middleButton(rawButtons, timestamp, fromMouse);
+        lastbuttons = processedButtons;
+        
         if (transducers_count == 0) {
             // Convert uint64_t to AbsoluteTime - use reinterpret_cast for compatibility
             trackpointReport.timestamp = *reinterpret_cast<AbsoluteTime*>(&timestamp);
-            trackpointReport.buttons = leftButton | rightButton;
+            trackpointReport.buttons = processedButtons;
             trackpointReport.dx = trackpointReport.dy = 0;
             super::messageClient(kIOMessageVoodooTrackpointMessage, voodooInputInstance,
                                  &trackpointReport, sizeof(trackpointReport));
         } else {
-            UInt32 buttons = 0;
             bool send = false;
-            if (lastLeftButton != leftButton) {
-                buttons |= leftButton;
-                send = true;
-            }
-            if (lastRightButton != rightButton) {
-                buttons |= rightButton;
+            if (lastLeftButton != leftButton || lastRightButton != rightButton) {
                 send = true;
             }
             if (send) {
                 // Convert uint64_t to AbsoluteTime - use reinterpret_cast for compatibility
                 trackpointReport.timestamp = *reinterpret_cast<AbsoluteTime*>(&timestamp);
-                trackpointReport.buttons = buttons;
+                trackpointReport.buttons = processedButtons;
                 trackpointReport.dx = trackpointReport.dy = 0;
                 super::messageClient(kIOMessageVoodooTrackpointMessage, voodooInputInstance,
                                      &trackpointReport, sizeof(trackpointReport));
@@ -2697,166 +2742,117 @@ void ApplePS2Elan::setTouchPadEnable(bool enable) {
     ps2_command<0>(NULL, enable ? kDP_Enable : kDP_SetDefaultsAndDisable);
 }
 
-void ApplePS2Elan::processTapAndHold(uint64_t timestamp) {
-    // ETD0180 Tap-and-Hold implementation for drag without physical buttons
-    // State machine: TAP_IDLE → FIRST_TAP_DOWN → WAITING_SECOND_TAP → SECOND_TAP_DOWN → DRAG_ACTIVE
+// Simple Button Timer Handler (adapted from VoodooPS2Mouse)
+void ApplePS2Elan::onButtonTimer(void) {
+    uint64_t now_abs;
+    clock_get_uptime(&now_abs);
     
-    DEBUG_LOG("[ETD0180_TAP] processTapAndHold() called, fw=0x%x\n", info.fw_version);
+    middleButton(lastbuttons, now_abs, fromTimer);
+}
+
+// Simple Middle Button State Machine (adapted from VoodooPS2Mouse)
+UInt32 ApplePS2Elan::middleButton(UInt32 buttons, uint64_t now_abs, MBComingFrom from) {
+    if (!_fakemiddlebutton)
+        return buttons;
     
-    if (!IS_ETD0180()) {
-        return;  // Only for ETD0180
-    }
+    // cancel timer if we see input before timeout has fired, but after expired
+    bool timeout = false;
+    uint64_t now_ns;
+    absolutetime_to_nanoseconds(now_abs, &now_ns);
+    if (fromTimer == from || now_ns - _buttontime > _maxmiddleclicktime)
+        timeout = true;
     
-    // Convert mach_absolute_time to milliseconds for easier comparison
-    // Use simple division for timing - precision not critical for tap detection
-    uint64_t timestamp_ms = timestamp / 1000000ULL;
-    
-    // Count active fingers and get primary finger
-    int activeFingers = 0;
-    int primaryFinger = -1;
-    for (int i = 0; i < ETP_MAX_FINGERS; i++) {
-        if (virtualFinger[i].touch) {
-            activeFingers++;
-            if (primaryFinger == -1) {
-                primaryFinger = i;
-            }
-        }
-    }
-    
-    // Calculate distance helper
-    auto calculateDistance = [](const TouchCoordinates& a, const TouchCoordinates& b) -> uint32_t {
-        int dx = (int)a.x - (int)b.x;
-        int dy = (int)a.y - (int)b.y;
-        return (uint32_t)((dx * dx) + (dy * dy));  // Squared distance (avoid sqrt)
-    };
-    
-    // DEBUG: Always log current state  
-    DEBUG_LOG("[ETD0180_TAP] DEBUG: threshold=%u, activeFingers=%d, primaryFinger=%d, state=%d\n", 
-          TAP_DISTANCE_THRESHOLD, activeFingers, primaryFinger, (int)tapHoldState);
-    
-    switch (tapHoldState) {
-        case TAP_IDLE:
-            if (activeFingers == 1 && primaryFinger >= 0) {
-                // First finger down - start tracking
-                tapHoldState = FIRST_TAP_DOWN;
-                firstTapTime = timestamp_ms;
-                firstTapPos = virtualFinger[primaryFinger].now;
-                DEBUG_LOG("[ETD0180_TAP] First tap down at (%d,%d)\n", firstTapPos.x, firstTapPos.y);
-            } else if (activeFingers > 0) {
-                DEBUG_LOG("[ETD0180_TAP] TAP_IDLE: Not starting tap (activeFingers=%d, primaryFinger=%d)\n", 
-                      activeFingers, primaryFinger);
+    // Simple state machine to simulate middle buttons with two buttons pressed together
+    switch (_mbuttonstate) {
+        case STATE_NOBUTTONS:
+            if (buttons & 0x4)
+                _mbuttonstate = STATE_NOOP;
+            else if (0x3 == buttons)
+                _mbuttonstate = STATE_MIDDLE;
+            else if (0x0 != buttons) {
+                // only single button, so delay this for a bit
+                _pendingbuttons = buttons;
+                _buttontime = now_ns;
+                if (_buttonTimer) {
+                    _buttonTimer->setTimeout(_maxmiddleclicktime);
+                }
+                _mbuttonstate = STATE_WAIT4TWO;
             }
             break;
             
-        case FIRST_TAP_DOWN:
-            if (activeFingers == 0) {
-                // Finger lifted - check if it was a quick tap
-                uint64_t tapDuration = timestamp_ms - firstTapTime;
-                if (tapDuration < MAX_FIRST_TAP_DURATION) {
-                    // Valid first tap - wait for second tap
-                    tapHoldState = WAITING_SECOND_TAP;
-                    firstTapTime = timestamp_ms;  // Reset timer for second tap timeout
-                    DEBUG_LOG("[ETD0180_TAP] First tap up (duration=%llu ms), waiting for second tap\n", tapDuration);
-                } else {
-                    // Too long - reset
-                    tapHoldState = TAP_IDLE;
-                    DEBUG_LOG("[ETD0180_TAP] First tap too long (%llu ms), reset (max=%llu)\n", 
-                          tapDuration, (uint64_t)MAX_FIRST_TAP_DURATION);
+        case STATE_WAIT4TWO:
+            if (!timeout && 0x3 == buttons) {
+                _pendingbuttons = 0;
+                if (_buttonTimer) {
+                    _buttonTimer->cancelTimeout();
                 }
-            } else if (activeFingers == 1 && primaryFinger >= 0) {
-                // Finger still down - check for excessive movement
-                uint32_t distSquared = calculateDistance(firstTapPos, virtualFinger[primaryFinger].now);
-                if (distSquared > (TAP_DISTANCE_THRESHOLD * TAP_DISTANCE_THRESHOLD)) {
-                    // Too much movement - reset
-                    tapHoldState = TAP_IDLE;
-                    DEBUG_LOG("[ETD0180_TAP] Too much movement during first tap, reset (dist=%u) start=(%d,%d) now=(%d,%d)\n",
-                          distSquared, firstTapPos.x, firstTapPos.y, 
-                          virtualFinger[primaryFinger].now.x, virtualFinger[primaryFinger].now.y);
+                _mbuttonstate = STATE_MIDDLE;
+            } else if (timeout || buttons != _pendingbuttons) {
+                _pendingbuttons = 0;
+                if (_buttonTimer) {
+                    _buttonTimer->cancelTimeout();
                 }
-            } else {
-                // Multiple fingers - reset
-                tapHoldState = TAP_IDLE;
-                DEBUG_LOG("[ETD0180_TAP] Multiple fingers during first tap, reset\n");
+                if (0x0 == buttons)
+                    _mbuttonstate = STATE_NOBUTTONS;
+                else
+                    _mbuttonstate = STATE_NOOP;
             }
             break;
             
-        case WAITING_SECOND_TAP:
-            if (activeFingers == 1 && primaryFinger >= 0) {
-                // Second finger down - check position and timing
-                uint64_t timeBetweenTaps = timestamp_ms - firstTapTime;
-                uint32_t distSquared = calculateDistance(firstTapPos, virtualFinger[primaryFinger].now);
-                
-                if (timeBetweenTaps <= TAP_HOLD_TIMEOUT && 
-                    distSquared <= (TAP_DISTANCE_THRESHOLD * TAP_DISTANCE_THRESHOLD)) {
-                    // Valid second tap - start monitoring for hold
-                    tapHoldState = SECOND_TAP_DOWN;
-                    secondTapTime = timestamp_ms;
-                    secondTapPos = virtualFinger[primaryFinger].now;
-                    DEBUG_LOG("[ETD0180_TAP] Second tap down at (%d,%d), time_delta=%llu ms\n", 
-                          secondTapPos.x, secondTapPos.y, timeBetweenTaps);
-                } else {
-                    // Invalid second tap - reset
-                    tapHoldState = TAP_IDLE;
-                    DEBUG_LOG("[ETD0180_TAP] Invalid second tap (time=%llu, dist=%u) first=(%d,%d) second=(%d,%d), reset\n", 
-                          timeBetweenTaps, distSquared, firstTapPos.x, firstTapPos.y, 
-                          virtualFinger[primaryFinger].now.x, virtualFinger[primaryFinger].now.y);
+        case STATE_MIDDLE:
+            if (0x0 == buttons)
+                _mbuttonstate = STATE_NOBUTTONS;
+            else if (0x3 != (buttons & 0x3)) {
+                // only single button, so delay to see if we get to none
+                _pendingbuttons = buttons;
+                _buttontime = now_ns;
+                if (_buttonTimer) {
+                    _buttonTimer->setTimeout(_maxmiddleclicktime);
                 }
-            } else if (activeFingers > 1) {
-                // Multiple fingers - reset
-                tapHoldState = TAP_IDLE;
-                DEBUG_LOG("[ETD0180_TAP] Multiple fingers, reset\n");
-            } else if (timestamp_ms - firstTapTime > TAP_HOLD_TIMEOUT) {
-                // Timeout - reset
-                tapHoldState = TAP_IDLE;
-                DEBUG_LOG("[ETD0180_TAP] Second tap timeout, reset\n");
+                _mbuttonstate = STATE_WAIT4NONE;
             }
             break;
             
-        case SECOND_TAP_DOWN:
-            if (activeFingers == 0) {
-                // Finger lifted before hold threshold - reset
-                tapHoldState = TAP_IDLE;
-                DEBUG_LOG("[ETD0180_TAP] Second tap released too early, reset\n");
-            } else if (activeFingers == 1 && primaryFinger >= 0) {
-                uint64_t holdDuration = timestamp_ms - secondTapTime;
-                uint32_t distSquared = calculateDistance(secondTapPos, virtualFinger[primaryFinger].now);
-                
-                if (holdDuration >= HOLD_THRESHOLD) {
-                    // Hold threshold reached - activate drag!
-                    tapHoldState = DRAG_ACTIVE;
-                    dragLockActive = true;
-                    DEBUG_LOG("[ETD0180_TAP] DRAG ACTIVATED! Hold duration=%llu ms\n", holdDuration);
-                } else if (distSquared > (TAP_DISTANCE_THRESHOLD * TAP_DISTANCE_THRESHOLD)) {
-                    // Too much movement before hold threshold - reset
-                    tapHoldState = TAP_IDLE;
-                    DEBUG_LOG("[ETD0180_TAP] Movement before hold threshold, reset\n");
+        case STATE_WAIT4NONE:
+            if (!timeout && 0x0 == buttons) {
+                _pendingbuttons = 0;
+                if (_buttonTimer) {
+                    _buttonTimer->cancelTimeout();
                 }
-            } else {
-                // Multiple fingers - reset
-                tapHoldState = TAP_IDLE;
-                DEBUG_LOG("[ETD0180_TAP] Multiple fingers during second tap, reset\n");
+                _mbuttonstate = STATE_NOBUTTONS;
+            } else if (timeout || buttons != _pendingbuttons) {
+                _pendingbuttons = 0;
+                if (_buttonTimer) {
+                    _buttonTimer->cancelTimeout();
+                }
+                if (0x0 == buttons)
+                    _mbuttonstate = STATE_NOBUTTONS;
+                else
+                    _mbuttonstate = STATE_NOOP;
             }
             break;
             
-        case DRAG_ACTIVE:
-            if (activeFingers == 0) {
-                // Finger lifted - end drag
-                tapHoldState = TAP_IDLE;
-                dragLockActive = false;
-                DEBUG_LOG("[ETD0180_TAP] DRAG ENDED - finger lifted\n");
-            } else if (activeFingers > 1) {
-                // Multiple fingers - end drag
-                tapHoldState = TAP_IDLE;
-                dragLockActive = false;
-                DEBUG_LOG("[ETD0180_TAP] DRAG ENDED - multiple fingers\n");
-            }
-            // During drag, keep dragLockActive = true to simulate button press
+        case STATE_NOOP:
+            if (0x0 == buttons)
+                _mbuttonstate = STATE_NOBUTTONS;
             break;
     }
     
-    // Apply drag lock to primary finger if active
-    if (dragLockActive && primaryFinger >= 0) {
-        virtualFinger[primaryFinger].button = 1;  // Simulate left button press
-        DEBUG_LOG("[ETD0180_TAP] Drag active - simulating button press on finger %d\n", primaryFinger);
+    // modify buttons after new state set
+    switch (_mbuttonstate) {
+        case STATE_MIDDLE:
+            buttons = 0x4;  // Middle button
+            break;
+            
+        case STATE_WAIT4NONE:
+        case STATE_WAIT4TWO:
+            buttons &= ~0x3;  // Clear left and right buttons
+            break;
+            
+        case STATE_NOBUTTONS:
+        case STATE_NOOP:
+            break;
     }
+    
+    return buttons;
 }
