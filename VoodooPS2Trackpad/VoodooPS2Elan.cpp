@@ -2172,21 +2172,22 @@ void ApplePS2Elan::processPacketHeadV4() {
     virtualFinger[id].now.x = x;
     virtualFinger[id].now.y = y;
     
-    // CALIBRATED EDGE DETECTION: Lowered threshold for easier triggering
-    // User reports being at physical edge but 85% threshold too high
+    // EDGE DETECTION FOR GESTURES: Detect edge but DON'T manipulate coordinates
+    // macOS needs natural coordinates for "two finger right-to-left swipe" Back gesture
     if (info.x_max > 1000) {  // Sanity check - reasonable trackpad size
-        // Reduced threshold - last 30% of trackpad for easier edge detection
-        uint32_t edge_threshold = (uint32_t)(info.x_max * 0.70f);  // Last 30%
+        // Detect edge area for gesture recognition - last 15% of trackpad
+        uint32_t edge_threshold = (uint32_t)(info.x_max * 0.85f);  // Last 15%
         if (x >= edge_threshold) {  // Near right edge
-            virtualFinger[id].now.x = info.x_max - 8;  // Map close to edge
-            IOLog("ELAN_EDGE_CALIBRATED: F%d X=%d->%d (threshold=%d, x_max=%d)\n", 
-                  id, x, (int)virtualFinger[id].now.x, edge_threshold, info.x_max);
+            // DON'T manipulate coordinates - let macOS handle natural edge gestures
+            // virtualFinger[id].now.x stays as original x value
+            IOLog("ELAN_EDGE_GESTURE: F%d at edge X=%d (threshold=%d, x_max=%d) - preserving coordinates for gestures\n", 
+                  id, x, edge_threshold, info.x_max);
         }
         
-        // Debug: Log current position vs threshold
+        // Debug: Log edge detection without coordinate manipulation
         static int debug_counter = 0;
-        if (++debug_counter % 30 == 0) {
-            IOLog("ELAN_EDGE_DEBUG: x_max=%d, current_x=%d, threshold=%d (70%%), triggered=%s\n", 
+        if (++debug_counter % 50 == 0) {
+            IOLog("ELAN_EDGE_DEBUG: x_max=%d, current_x=%d, threshold=%d (85%%), at_edge=%s\n", 
                   info.x_max, x, edge_threshold, (x >= edge_threshold) ? "YES" : "NO");
         }
     }
