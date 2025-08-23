@@ -1242,13 +1242,13 @@ int ApplePS2Elan::elantechSetupPS2() {
     // ETD0180 COORDINATE RANGE FIX: Use full hardware capability
     if (IS_ETD0180()) {
         // ANALYSIS: Live tests showed hardware can do much more:
-        // - Multi-touch Y coordinates reached 3847 (vs. old limit 1150)
-        // - X coordinates were artificially limited by old tight ranges
-        // - Hardware uses 12-bit coordinates: 0-4095 theoretical maximum
-        info.x_min = 0;      // Use full hardware X range
-        info.x_max = 4095;   // 12-bit maximum (2^12-1)
-        info.y_min = 0;      // Use full hardware Y range  
-        info.y_max = 4095;   // 12-bit maximum, validated by multi-touch tests
+        // ETD0180 V4 Protocol: Linux driver analysis shows v4 devices use 0-based coordinates
+        // x_min=0, y_min=0 (native), x_max/y_max from firmware query
+        // No coordinate transformation needed - hardware reports 0-based coordinates natively
+        info.x_min = 0;      // V4 protocol uses 0-based X coordinates (Linux approach)
+        info.x_max = 3094;   // Dynamic range - should query from firmware  
+        info.y_min = 0;      // V4 protocol uses 0-based Y coordinates (Linux approach)
+        info.y_max = 3096;   // Dynamic range - should query from firmware
 
         IOLog("VoodooPS2Elan: ETD0180 using FULL hardware ranges X=%d-%d, Y=%d-%d (range %d x %d)\n",
               info.x_min, info.x_max, info.y_min, info.y_max,
@@ -2172,25 +2172,7 @@ void ApplePS2Elan::processPacketHeadV4() {
     virtualFinger[id].now.x = x;
     virtualFinger[id].now.y = y;
     
-    // EDGE DETECTION FOR GESTURES: Detect edge but DON'T manipulate coordinates
-    // macOS needs natural coordinates for "two finger right-to-left swipe" Back gesture
-    if (info.x_max > 1000) {  // Sanity check - reasonable trackpad size
-        // Detect edge area for gesture recognition - last 15% of trackpad
-        uint32_t edge_threshold = (uint32_t)(info.x_max * 0.85f);  // Last 15%
-        if (x >= edge_threshold) {  // Near right edge
-            // DON'T manipulate coordinates - let macOS handle natural edge gestures
-            // virtualFinger[id].now.x stays as original x value
-            IOLog("ELAN_EDGE_GESTURE: F%d at edge X=%d (threshold=%d, x_max=%d) - preserving coordinates for gestures\n", 
-                  id, x, edge_threshold, info.x_max);
-        }
-        
-        // Debug: Log edge detection without coordinate manipulation
-        static int debug_counter = 0;
-        if (++debug_counter % 50 == 0) {
-            IOLog("ELAN_EDGE_DEBUG: x_max=%d, current_x=%d, threshold=%d (85%%), at_edge=%s\n", 
-                  info.x_max, x, edge_threshold, (x >= edge_threshold) ? "YES" : "NO");
-        }
-    }
+    // REMOVED EDGE DETECTION: VoodooInput handles this natively with correct dimensions
 
     // ETD0180 LINUX IMPLEMENTATION - Use traces only for touch area like Linux kernel
     if (IS_ETD0180()) {
@@ -2449,27 +2431,31 @@ void ApplePS2Elan::sendTouchData() {
         // if (elantech_is_buttonpad(&etd->info)) input_report_key(dev, BTN_LEFT, packet[0] & 0x03);
         
         if (info.is_buttonpad && state.button != 0) {
-            // CLICKPAD SOLUTION: Coordinate-based areas with 2-finger simulation for right-click
-            UInt32 x = state.now.x;
-            UInt32 y = state.now.y;
-            UInt32 x_max = info.x_max;
+            // CLICKPAD SOLUTION: Use 0-based coordinates directly (v4 protocol approach)
+            UInt32 x = state.now.x;  // 0-based coordinates from hardware
+            UInt32 y = state.now.y;  // 0-based coordinates from hardware
             
-            // ETD0180 MIDDLE-CLICK: Above button area (Force Touch zone)
-            if (y < 3800) {  // Above button area
+            // ETD0180 BUTTON AREAS: Calculate based on 0-based coordinate ranges (Linux v4 approach)
+            UInt32 coordinate_range_y = info.y_max;  // Since x_min=0, y_min=0
+            UInt32 coordinate_range_x = info.x_max;  // Since x_min=0, y_min=0
+            UInt32 button_area_threshold = coordinate_range_y - 100;  // Top 100 units reserved for clicks  
+            UInt32 left_right_split = coordinate_range_x / 2;  // True 50/50 split in 0-based space
+            
+            if (y < button_area_threshold) {  // Above button area
                 // MIDDLE CLICK AREA → Force Touch (Quick Look, Nachschlagen, etc.)
                 transducer.isPhysicalButtonDown = false;  // No physical button for Force Touch
                 transducer.supportsPressure = true;       // Enable pressure events
                 transducer.currentCoordinates.pressure = 255;  // Maximum pressure for Force Touch
                 transducer.currentCoordinates.width = 10;      // Standard width
-                DEBUG_LOG("ETD0180_CLICKPAD_MIDDLE: Y=%d < 3800 → FORCE TOUCH (Quick Look/Nachschlagen)\n", y);
-            } else if (x < 1609) {  // Left half of button area: optimal 50/50 split
+                DEBUG_LOG("ETD0180_CLICKPAD_MIDDLE: Y=%d < %d → FORCE TOUCH (Quick Look/Nachschlagen)\n", y, button_area_threshold);
+            } else if (x < left_right_split) {  // Left half of button area
                 // LEFT CLICK AREA → Physical Button (Primary Click)
                 transducer.isPhysicalButtonDown = true;
-                DEBUG_LOG("ETD0180_CLICKPAD_LEFT: X=%d < 1609 → PRIMARY CLICK\n", x);
-            } else {  // Right half of button area: x >= 1609
+                DEBUG_LOG("ETD0180_CLICKPAD_LEFT: X=%d < %d → PRIMARY CLICK (0-based coords)\n", x, left_right_split);
+            } else {  // Right half of button area
                 // RIGHT CLICK AREA → Realistic 2-finger tap (Secondary Click)
                 transducer.isPhysicalButtonDown = true;  // Both fingers press the button
-                DEBUG_LOG("ETD0180_CLICKPAD_RIGHT: X=%d >= 1609 → REALISTIC 2-FINGER TAP\n", x);
+                DEBUG_LOG("ETD0180_CLICKPAD_RIGHT: X=%d >= %d → REALISTIC 2-FINGER TAP (0-based coords)\n", x, left_right_split);
                 
                 // Add realistic second finger for right-click
                 if (transducers_count == 0) {  // Only if this is the first finger
