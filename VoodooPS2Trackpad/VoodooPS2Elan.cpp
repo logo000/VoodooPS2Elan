@@ -1090,9 +1090,9 @@ int ApplePS2Elan::elantechSetInputParams() {
     // Resolution 5 → 81920 → VoodooInput sees 16384 (0x4000)
     // 25000 is closer to 16384 = less laggy, closer to Resolution 5 feel
     if (info.x_res == 6) {
-        physical_max_x = 25000;  // Closer to Resolution 5, less laggy
-        physical_max_y = 25000;  // Keep proportional  
-        IOLog("ELAN_CLOSER_TO_5: Using 25000 - closer to Resolution 5, less laggy\n");
+        physical_max_x = 17000;  // 16-bit safe, fine-tuned resolution  
+        physical_max_y = 17000;  // Keep proportional  
+        IOLog("ELAN_16BIT_FINETUNED: Using 17000 - 16-bit safe, fine-tuned resolution\n");
     }
     
     setProperty(VOODOO_INPUT_PHYSICAL_MAX_X_KEY, physical_max_x, 32);
@@ -2421,7 +2421,7 @@ void ApplePS2Elan::sendTouchData() {
     int total_fingers = 0;
     int navigation_fingers = 0;
     int button_fingers = 0;
-    UInt32 button_area_threshold = info.y_max - 196;
+    UInt32 button_area_threshold = info.y_max - 400;
     
     if (info.is_buttonpad) {
         // PHASE 1: Initialize button states and analyze all fingers
