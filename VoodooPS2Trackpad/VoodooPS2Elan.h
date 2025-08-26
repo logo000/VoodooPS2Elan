@@ -342,6 +342,8 @@ private:
     void processPacketETD0180MultiTouch(int packetType);
     void sendTouchData();
     void onButtonTimer(void);
+    bool isAnyFingerActive(void);
+    bool isMultiFingerWithNavigation(void);
     enum MBComingFrom { fromTimer, fromMouse };
     UInt32 middleButton(UInt32 buttons, uint64_t now_abs, MBComingFrom from);
     void resetMouse();

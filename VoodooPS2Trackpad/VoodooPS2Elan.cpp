@@ -1100,6 +1100,11 @@ int ApplePS2Elan::elantechSetInputParams() {
     
     IOLog("ELAN_DIMENSIONS: x_res=%d physical_max_x=%d physical_max_y=%d\n", 
           info.x_res, physical_max_x, physical_max_y);
+    
+    // Log button area configuration for calibration debugging
+    UInt32 button_area_threshold = info.y_max - 100;
+    IOLog("ELAN_BUTTON_AREA_CONFIG: Trackpad X=%d Y=%d, Button area threshold=%d (bottom %d units)\n", 
+          info.x_max, info.y_max, button_area_threshold, 100);
 
     setProperty(VOODOO_INPUT_TRANSFORM_KEY, 0ull, 32);
     setProperty("VoodooInputSupported", kOSBooleanTrue);
@@ -2411,11 +2416,65 @@ void ApplePS2Elan::sendTouchData() {
         DEBUG_LOG("ETD0180_SEND: Sending %d active fingers to VoodooInput\n", active_count);
     }
     
+    // SMART CLICKPAD LOGIC: Analyze all active fingers ONCE before processing
+    bool is_clickpad_pressed = false;
+    int total_fingers = 0;
+    int navigation_fingers = 0;
+    int button_fingers = 0;
+    UInt32 button_area_threshold = info.y_max - 196;
+    
+    if (info.is_buttonpad) {
+        // PHASE 1: Initialize button states and analyze all fingers
+        leftButton = 0;  // Clear previous button state
+        rightButton = 0; // Clear previous button state
+        bool left_button_pressed = false;
+        bool right_button_pressed = false;
+        UInt32 left_right_split = info.x_max / 2;
+        
+        for (int j = 0; j < ETP_MAX_FINGERS; j++) {
+            if (virtualFinger[j].touch) {
+                total_fingers++;
+                if (virtualFinger[j].now.y < button_area_threshold) {
+                    navigation_fingers++;
+                } else {
+                    button_fingers++;
+                    // Check which button area is clicked
+                    if (virtualFinger[j].button != 0) {
+                        if (virtualFinger[j].now.x < left_right_split) {
+                            left_button_pressed = true;
+                        } else {
+                            right_button_pressed = true;
+                        }
+                    }
+                }
+                if (virtualFinger[j].button != 0) {
+                    is_clickpad_pressed = true;
+                }
+            }
+        }
+        
+        // PHASE 2: Set hardware button states
+        if (left_button_pressed) {
+            leftButton = 1;
+            IOLog("ELAN_SMART_CLICKPAD: Setting leftButton=1\n");
+        }
+        if (right_button_pressed) {
+            rightButton = 1; 
+            IOLog("ELAN_SMART_CLICKPAD: Setting rightButton=1\n");
+        }
+        
+        if (is_clickpad_pressed) {
+            IOLog("ELAN_SMART_CLICKPAD: Total=%d fingers (nav=%d, btn=%d), Left=%d Right=%d, Dimensions: y_max=%d, x_max=%d, threshold=%d, split=%d\n", 
+                  total_fingers, navigation_fingers, button_fingers, left_button_pressed, right_button_pressed, info.y_max, info.x_max, button_area_threshold, left_right_split);
+        }
+    }
+    
     for (int i = 0; i < ETP_MAX_FINGERS; i++) {
         const auto &state = virtualFinger[i];
         if (!state.touch) {
             continue;
         }
+
 
         auto &transducer = inputEvent.transducers[transducers_count];
 
@@ -2426,64 +2485,36 @@ void ApplePS2Elan::sendTouchData() {
         transducer.timestamp = *reinterpret_cast<AbsoluteTime*>(&timestamp);
 
         transducer.isValid = true;
-        // LINUX-STYLE CLICKPAD LOGIC: Use packet[0] button bits directly!
-        // Based on Linux elantech.c: "For clickpads map both buttons to BTN_LEFT"
-        // if (elantech_is_buttonpad(&etd->info)) input_report_key(dev, BTN_LEFT, packet[0] & 0x03);
         
-        if (info.is_buttonpad && state.button != 0) {
-            // CLICKPAD SOLUTION: Use 0-based coordinates directly (v4 protocol approach)
-            UInt32 x = state.now.x;  // 0-based coordinates from hardware
-            UInt32 y = state.now.y;  // 0-based coordinates from hardware
+        if (info.is_buttonpad && is_clickpad_pressed) {
+            // Apply smart clickpad logic based on global analysis
+            UInt32 x = state.now.x;
+            UInt32 y = state.now.y;
+            UInt32 left_right_split = info.x_max / 2;
             
-            // ETD0180 BUTTON AREAS: Calculate based on 0-based coordinate ranges (Linux v4 approach)
-            UInt32 coordinate_range_y = info.y_max;  // Since x_min=0, y_min=0
-            UInt32 coordinate_range_x = info.x_max;  // Since x_min=0, y_min=0
-            UInt32 button_area_threshold = coordinate_range_y - 100;  // Top 100 units reserved for clicks  
-            UInt32 left_right_split = coordinate_range_x / 2;  // True 50/50 split in 0-based space
-            
-            if (y < button_area_threshold) {  // Above button area
-                // MIDDLE CLICK AREA → Force Touch (Quick Look, Nachschlagen, etc.)
-                transducer.isPhysicalButtonDown = false;  // No physical button for Force Touch
-                transducer.supportsPressure = true;       // Enable pressure events
-                transducer.currentCoordinates.pressure = 255;  // Maximum pressure for Force Touch
-                transducer.currentCoordinates.width = 10;      // Standard width
-                DEBUG_LOG("ETD0180_CLICKPAD_MIDDLE: Y=%d < %d → FORCE TOUCH (Quick Look/Nachschlagen)\n", y, button_area_threshold);
-            } else if (x < left_right_split) {  // Left half of button area
-                // LEFT CLICK AREA → Physical Button (Primary Click)
-                transducer.isPhysicalButtonDown = true;
-                DEBUG_LOG("ETD0180_CLICKPAD_LEFT: X=%d < %d → PRIMARY CLICK (0-based coords)\n", x, left_right_split);
-            } else {  // Right half of button area
-                // RIGHT CLICK AREA → Realistic 2-finger tap (Secondary Click)
-                transducer.isPhysicalButtonDown = true;  // Both fingers press the button
-                DEBUG_LOG("ETD0180_CLICKPAD_RIGHT: X=%d >= %d → REALISTIC 2-FINGER TAP (0-based coords)\n", x, left_right_split);
-                
-                // Add realistic second finger for right-click
-                if (transducers_count == 0) {  // Only if this is the first finger
-                    transducers_count++;
-                    auto &second_finger = inputEvent.transducers[transducers_count];
-                    
-                    // Place second finger realistically close (like real 2-finger tap)
-                    second_finger.currentCoordinates.x = state.now.x + 50;   // 50 units right (finger width)
-                    second_finger.currentCoordinates.y = state.now.y;         // Same Y position
-                    second_finger.currentCoordinates.pressure = state.now.pressure;
-                    second_finger.currentCoordinates.width = state.now.width;
-                    
-                    second_finger.previousCoordinates = second_finger.currentCoordinates;
-                    second_finger.timestamp = transducer.timestamp;
-                    second_finger.isValid = true;
-                    second_finger.isPhysicalButtonDown = true;  // Both fingers press
-                    second_finger.isTransducerActive = true;
-                    second_finger.secondaryId = 1;
-                    second_finger.fingerType = GetBestFingerType(1);
-                    second_finger.type = FINGER;
-                    second_finger.supportsPressure = false;
-                    
-                    DEBUG_LOG("ETD0180_CLICKPAD_2FINGER: Realistic second finger at X=%d Y=%d\n", 
-                          second_finger.currentCoordinates.x, second_finger.currentCoordinates.y);
-                    
-                    // Increment counter after setting up second finger
-                    transducers_count++;
+            if (y < button_area_threshold) {  // Navigation area finger
+                if (total_fingers == 1) {
+                    // SOLO NAVIGATION FINGER: Enable middle click (Force Touch)
+                    transducer.isPhysicalButtonDown = false;
+                    transducer.supportsPressure = true;
+                    transducer.currentCoordinates.pressure = 255;
+                    transducer.currentCoordinates.width = 10;
+                    IOLog("ELAN_SOLO_NAVIGATION: F%d middle click enabled (Force Touch) at X=%d Y=%d\n", i, x, y);
+                } else {
+                    // MULTI-FINGER NAVIGATION: Treat as LEFT BUTTON for drag operations
+                    transducer.isPhysicalButtonDown = true;
+                    transducer.supportsPressure = false;
+                    transducer.currentCoordinates.pressure = 0;
+                    transducer.currentCoordinates.width = 0;
+                    IOLog("ELAN_MULTI_NAVIGATION: F%d treated as LEFT BUTTON for drag (total=%d) at X=%d Y=%d\n", i, total_fingers, x, y);
                 }
+            } else {  // Button area finger
+                // BUTTON AREA: Hardware buttons already set above, just send finger position
+                transducer.isPhysicalButtonDown = false;
+                transducer.supportsPressure = false;
+                transducer.currentCoordinates.pressure = 0;
+                transducer.currentCoordinates.width = 0;
+                IOLog("ELAN_BUTTON_AREA: F%d at X=%d Y=%d → finger position only (hardware buttons set above)\n", i, x, y);
             }
         } else if (!info.is_buttonpad && state.button != 0) {
             // Traditional trackpad with physical buttons
@@ -2508,14 +2539,10 @@ void ApplePS2Elan::sendTouchData() {
             transducer.supportsPressure = false;
         }
 
-        // DISABLE Force Touch for Clickpads - EXCEPT middle area which uses it!
-        // ETD0180 Clickpad: Left/Right = normal buttons, Middle = Force Touch
+        // Force Touch handling for clickpads vs traditional trackpads
         if (info.is_buttonpad) {
-            // For clickpads: Don't override Force Touch if already set (middle area)
-            // isPhysicalButtonDown and supportsPressure already set by clickpad logic above
-            if (!transducer.supportsPressure) {
-                DEBUG_LOG("ETD0180_CLICKPAD_MODE: Using normal button events\n");
-            }
+            // Clickpad: Force Touch already handled by smart logic above
+            // Don't override what the smart clickpad logic decided
         } else {
             // For traditional trackpads with physical buttons: Use force touch if enabled
             if (_forceTouchMode == FORCE_TOUCH_BUTTON && transducer.isPhysicalButtonDown) {
@@ -2569,7 +2596,8 @@ void ApplePS2Elan::sendTouchData() {
     }
 
     // Process hardware buttons with middle button simulation
-    if (!info.is_buttonpad) {
+    // Note: Now processing buttons for both traditional trackpads AND buttonpads/clickpads
+    {
         // Raw hardware buttons
         UInt32 rawButtons = (leftButton ? 1 : 0) | (rightButton ? 2 : 0);
         
@@ -2577,26 +2605,30 @@ void ApplePS2Elan::sendTouchData() {
         UInt32 processedButtons = middleButton(rawButtons, timestamp, fromMouse);
         lastbuttons = processedButtons;
         
+        // Always send button events when buttons are pressed, regardless of finger count
+        bool send = false;
         if (transducers_count == 0) {
+            // Always send when no fingers (trackpoint mode)
+            send = true;
+        } else {
+            // Send when button state changed (trackpad mode)
+            if (lastLeftButton != leftButton || lastRightButton != rightButton) {
+                send = true;
+            }
+            // ALSO send when buttons are currently pressed (for clickpad button area)
+            if (leftButton || rightButton) {
+                send = true;
+            }
+        }
+        
+        if (send) {
             // Convert uint64_t to AbsoluteTime - use reinterpret_cast for compatibility
             trackpointReport.timestamp = *reinterpret_cast<AbsoluteTime*>(&timestamp);
             trackpointReport.buttons = processedButtons;
             trackpointReport.dx = trackpointReport.dy = 0;
             super::messageClient(kIOMessageVoodooTrackpointMessage, voodooInputInstance,
                                  &trackpointReport, sizeof(trackpointReport));
-        } else {
-            bool send = false;
-            if (lastLeftButton != leftButton || lastRightButton != rightButton) {
-                send = true;
-            }
-            if (send) {
-                // Convert uint64_t to AbsoluteTime - use reinterpret_cast for compatibility
-                trackpointReport.timestamp = *reinterpret_cast<AbsoluteTime*>(&timestamp);
-                trackpointReport.buttons = processedButtons;
-                trackpointReport.dx = trackpointReport.dy = 0;
-                super::messageClient(kIOMessageVoodooTrackpointMessage, voodooInputInstance,
-                                     &trackpointReport, sizeof(trackpointReport));
-            }
+            IOLog("ELAN_BUTTON_SENT: rawButtons=%d processedButtons=%d (L=%d R=%d)\n", rawButtons, processedButtons, leftButton, rightButton);
         }
 
         lastLeftButton = leftButton;
@@ -2737,10 +2769,78 @@ void ApplePS2Elan::onButtonTimer(void) {
     middleButton(lastbuttons, now_abs, fromTimer);
 }
 
+// Check if any finger is actively touching the trackpad
+bool ApplePS2Elan::isAnyFingerActive(void) {
+    for (int i = 0; i < 5; i++) {
+        if (virtualFinger[i].touch) {
+            // Log any active finger position for debugging  
+            DEBUG_LOG("VoodooPS2Elan: ACTIVE_FINGER_DETECTED: F%d at X=%d Y=%d (trackpad_max=%dx%d)\n", 
+                     i, (int)virtualFinger[i].now.x, (int)virtualFinger[i].now.y, info.x_max, info.y_max);
+            return true;  // ANY active finger should trigger prevention logic
+        }
+    }
+    return false;
+}
+
+// Check if multiple fingers are active with one in navigation area
+bool ApplePS2Elan::isMultiFingerWithNavigation(void) {
+    const UInt32 button_area_height = 100;
+    if (info.y_max <= button_area_height) return false;
+    UInt32 nav_threshold = info.y_max - button_area_height;
+    
+    int active_fingers = 0;
+    bool has_nav_finger = false;
+    
+    for (int i = 0; i < ETP_MAX_FINGERS; i++) {
+        if (virtualFinger[i].touch) {
+            active_fingers++;
+            if (virtualFinger[i].now.y < nav_threshold) {
+                has_nav_finger = true;
+                IOLog("VoodooPS2Elan: NAV_FINGER_F%d: y=%d < %d (nav area)\n",
+                          i, (int)virtualFinger[i].now.y, nav_threshold);
+            }
+        }
+    }
+    
+    IOLog("VoodooPS2Elan: FINGER_COUNT: %d active, nav_finger=%s\n", 
+              active_fingers, has_nav_finger ? "YES" : "NO");
+    
+    // Prevention nur wenn: MEHR als 1 Finger UND mindestens einer im Nav-Bereich
+    return (active_fingers > 1) && has_nav_finger;
+}
+
 // Simple Middle Button State Machine (adapted from VoodooPS2Mouse)
 UInt32 ApplePS2Elan::middleButton(UInt32 buttons, uint64_t now_abs, MBComingFrom from) {
-    if (!_fakemiddlebutton)
+    // Skip fake middle button logic for buttonpads - they have smart clickpad logic
+    if (!_fakemiddlebutton || info.is_buttonpad)
         return buttons;
+    
+    // Log any button activity for debugging
+    if (buttons != 0) {
+        DEBUG_LOG("VoodooPS2Elan: RAW_BUTTON_INPUT: buttons=0x%x (L=%s R=%s M=%s)\n", 
+                 buttons, 
+                 (buttons & 0x1) ? "ON" : "OFF", 
+                 (buttons & 0x2) ? "ON" : "OFF", 
+                 (buttons & 0x4) ? "ON" : "OFF");
+    }
+    
+    // BUGFIX: Prevent middle click when finger is in button area
+    // If finger is navigating in button area and physical button is pressed,
+    // prioritize physical button over finger touch to avoid unintended middle click
+    if (buttons == 0x3) {
+        IOLog("VoodooPS2Elan: MIDDLE_CLICK_DETECTED: Raw buttons=0x%x (L=%s R=%s)\n", 
+                 buttons, (buttons & 0x1) ? "YES" : "NO", (buttons & 0x2) ? "YES" : "NO");
+        
+        if (isMultiFingerWithNavigation()) {
+            // Multi-finger scenario: Navigation finger + button finger detected
+            // Prioritize left physical button (most common case)
+            IOLog("VoodooPS2Elan: MIDDLE_CLICK_PREVENTION: Multi-finger with navigation area detected - converting to left click\n");
+            IOLog("VoodooPS2Elan: BUTTON_OVERRIDE: Changed buttons from 0x%x to 0x1 (middle->left)\n", buttons);
+            return 0x1;  // Return only left button, ignore finger touch
+        } else {
+            IOLog("VoodooPS2Elan: MIDDLE_CLICK_ALLOWED: Single finger or no navigation area finger - allowing middle click\n");
+        }
+    }
     
     // cancel timer if we see input before timeout has fired, but after expired
     bool timeout = false;
