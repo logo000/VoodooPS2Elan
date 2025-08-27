@@ -338,8 +338,6 @@ private:
     void processPacketStatusV4();
     void processPacketHeadV4();
     void processPacketMotionV4();
-    void processPacketETD0180();
-    void processPacketETD0180MultiTouch(int packetType);
     void sendTouchData();
     void onButtonTimer(void);
     bool isAnyFingerActive(void);

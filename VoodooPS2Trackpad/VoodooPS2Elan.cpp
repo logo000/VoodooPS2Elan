@@ -1996,7 +1996,21 @@ void ApplePS2Elan::elantechReportAbsoluteV4(int packetType) {
 
         case PACKET_UNKNOWN:
         default:
-            IOLog("VoodooPS2Elan: Got UNKNOWN packet type %d\n", packetType);
+            if (IS_ETD0180()) {
+                unsigned char *packet = _ringBuffer.tail();
+                IOLog("ETD0180_UNKNOWN_PACKET: Type=%d RAW[0x%02x 0x%02x 0x%02x 0x%02x 0x%02x 0x%02x]\n",
+                      packetType, packet[0], packet[1], packet[2], packet[3], packet[4], packet[5]);
+                
+                // Try to extract coordinates like ETD0180MultiTouch would
+                if (packetType == 5 || packetType == 6) {
+                    unsigned int x = packet[1] | ((packet[3] & 0x0F) << 8);
+                    unsigned int y = packet[2] | ((packet[4] & 0x0F) << 8);
+                    IOLog("ETD0180_UNKNOWN_COORDS: Type=%d X=%d Y=%d (V4-style extraction)\n", 
+                          packetType, x, y);
+                }
+            } else {
+                IOLog("VoodooPS2Elan: Got UNKNOWN packet type %d\n", packetType);
+            }
             break;
     }
 }
@@ -2069,12 +2083,23 @@ void ApplePS2Elan::processPacketStatusV4() {
             sendTouchData();
             return;
         }
+        
+        // ETD0180 FIX: Skip buggy finger counting - let HEAD packets handle it directly
+        IOLog("ETD0180_STATUS_FIXED: Skipping heldFingers logic - HEAD packets will handle finger counting\n");
+        return;
     }
 
     // notify finger state change
     int count = 0;
     
     fingers = packet[1] & 0x1f;
+    
+    // DEBUG: Log STATUS packet parsing for ETD0180 debugging
+    if (IS_ETD0180()) {
+        IOLog("ETD0180_STATUS_DEBUG: RAW[0x%02x 0x%02x 0x%02x 0x%02x 0x%02x 0x%02x]\n",
+              packet[0], packet[1], packet[2], packet[3], packet[4], packet[5]);
+        IOLog("ETD0180_STATUS_DEBUG: fingers=0x%02x (from packet[1]&0x1f)\n", fingers);
+    }
     
     for (int i = 0; i < ETP_MAX_FINGERS; i++) {
         if ((fingers & (1 << i)) == 0) {
@@ -2087,6 +2112,11 @@ void ApplePS2Elan::processPacketStatusV4() {
             virtualFinger[i].touch = true;
             count++;
         }
+    }
+    
+    // DEBUG: Log final finger count for ETD0180
+    if (IS_ETD0180()) {
+        IOLog("ETD0180_STATUS_DEBUG: Final count=%d (heldFingers will be set to this)\n", count);
     }
 
     heldFingers = count;
@@ -2247,129 +2277,9 @@ void ApplePS2Elan::processPacketMotionV4() {
     sendTouchData();
 }
 
-void ApplePS2Elan::processPacketETD0180() {
-    unsigned char *packet = _ringBuffer.tail();
-    
-    // ETD0180 button extraction
-    leftButton = packet[0] & 0x1;
-    rightButton = packet[0] & 0x2;
-    
-    // ETD0180 coordinate extraction - USE ETD0180 METHOD, NOT V4 HEAD!
-    // According to ETD0180_Packet_Matrix.md:
-    unsigned int x = packet[1] | ((packet[3] & 0x0F) << 8);
-    unsigned int y = packet[2] | ((packet[4] & 0x0F) << 8);
-    
-    DEBUG_LOG("ETD0180_COORDS: [0x%02x 0x%02x 0x%02x 0x%02x 0x%02x 0x%02x] X=%d Y=%d L%d/R%d\n", 
-          packet[0], packet[1], packet[2], packet[3], packet[4], packet[5], x, y, leftButton, rightButton);
-    
-    elantechRescale(x, y);
-    
-    // Finger presence detection - ETD0180 uses different bits than standard V4
-    // Check if we have valid coordinates and finger presence
-    bool fingerPresent = (packet[0] & 0x30) != 0;  // bits 4-5 indicate finger presence
-    
-    if (fingerPresent && x > 0 && y > 0 && x < info.x_max && y < info.y_max) {
-        // Valid touch detected
-        virtualFinger[0].touch = true;
-        virtualFinger[0].prev = virtualFinger[0].now;
-        virtualFinger[0].now.x = x;
-        virtualFinger[0].now.y = info.y_max - y; // Invert Y for macOS
-        virtualFinger[0].button = (leftButton ? 1 : 0) | (rightButton ? 2 : 0);
-        
-        DEBUG_LOG("ETD0180_TOUCH: Valid touch at X=%d Y=%d (inverted Y=%d)\n", 
-              x, y, (int)virtualFinger[0].now.y);
-    } else {
-        // No finger or invalid coordinates
-        virtualFinger[0].touch = false;
-        virtualFinger[0].prev = virtualFinger[0].now;
-        
-        DEBUG_LOG("ETD0180_NO_TOUCH: finger=%d x=%d y=%d (max X=%d Y=%d)\n", 
-              fingerPresent, x, y, info.x_max, info.y_max);
-    }
-    
-    
-    sendTouchData();
-}
+// REMOVED: Dead processPacketETD0180() function - ETD0180 uses standard V4 processing
 
-void ApplePS2Elan::processPacketETD0180MultiTouch(int packetType) {
-    unsigned char *packet = _ringBuffer.tail();
-    
-    // ETD0180 button extraction (only from first finger packet)
-    if (packetType == 5) { // V4_HEAD - first finger
-        leftButton = packet[0] & 0x1;
-        rightButton = packet[0] & 0x2;
-    }
-    
-    // Determine finger index based on packet type
-    int fingerIndex = 0;
-    if (packetType == 5) {      // V4_HEAD = first finger
-        fingerIndex = 0;
-    } else if (packetType == 6) { // V4_TAIL = second finger 
-        fingerIndex = 1;
-    } else {
-        DEBUG_LOG("ETD0180_MULTITOUCH: Unknown packet type %d\n", packetType);
-        return;
-    }
-    
-    // ETD0180 coordinate extraction - TRY V3-style layout for multi-touch
-    // Current V4-style gives F1: X=512 (constant), Y jumps chaotically
-    // Test V3-style: use bytes [1,2] for X and [4,5] for Y  
-    unsigned int x, y;
-    if (fingerIndex == 1) {  // Second finger - try V3-style layout
-        x = ((packet[1] & 0x0f) << 8) | packet[2];    // V3-style: bytes 1,2
-        y = (((packet[4] & 0x0f) << 8) | packet[5]);  // V3-style: bytes 4,5
-        DEBUG_LOG("ETD0180_MT_F1_V3: Testing V3-layout X=%d Y=%d\n", x, y);
-    } else {  // First finger - keep V4-style (working)
-        x = packet[1] | ((packet[3] & 0x0F) << 8);    // V4-style: bytes 1,3  
-        y = packet[2] | ((packet[4] & 0x0F) << 8);    // V4-style: bytes 2,4
-    }
-    
-    DEBUG_LOG("ETD0180_MT_F%d: [0x%02x 0x%02x 0x%02x 0x%02x 0x%02x 0x%02x] X=%d Y=%d type=%d\n", 
-          fingerIndex, packet[0], packet[1], packet[2], packet[3], packet[4], packet[5], x, y, packetType);
-    
-    elantechRescale(x, y);
-    
-    // Finger presence detection
-    bool fingerPresent = (packet[0] & 0x30) != 0;  // bits 4-5 indicate finger presence
-    
-    if (fingerPresent && x > 0 && y > 0 && x < info.x_max && y < info.y_max) {
-        // Valid touch detected
-        virtualFinger[fingerIndex].touch = true;
-        virtualFinger[fingerIndex].prev = virtualFinger[fingerIndex].now;
-        // Set coordinates - no swap needed, ETD0180 uses standard orientation
-        virtualFinger[fingerIndex].now.x = x;
-        virtualFinger[fingerIndex].now.y = info.y_max - y; // Invert Y for macOS
-        
-        DEBUG_LOG("ETD0180_MT_COORDS: finger=%d x=%d y=%d (inverted_y=%d)\n", 
-              fingerIndex, x, y, (int)(info.y_max - y));
-        
-        // Only first finger controls buttons
-        if (fingerIndex == 0) {
-            virtualFinger[fingerIndex].button = (leftButton ? 1 : 0) | (rightButton ? 2 : 0);
-        } else {
-            virtualFinger[fingerIndex].button = 0;
-        }
-        
-        DEBUG_LOG("ETD0180_MT_TOUCH_F%d: Valid touch at X=%d Y=%d (inverted Y=%d)\n", 
-              fingerIndex, x, y, (int)virtualFinger[fingerIndex].now.y);
-    } else {
-        // No finger or invalid coordinates
-        virtualFinger[fingerIndex].touch = false;
-        virtualFinger[fingerIndex].prev = virtualFinger[fingerIndex].now;
-        
-        DEBUG_LOG("ETD0180_MT_NO_TOUCH_F%d: finger=%d x=%d y=%d (max X=%d Y=%d)\n", 
-              fingerIndex, fingerPresent, x, y, info.x_max, info.y_max);
-    }
-    
-    // CRITICAL FIX: Only send events for the PRIMARY finger (F0)
-    // This prevents cursor jumping when F1 packets arrive
-    if (fingerIndex == 0) {
-        DEBUG_LOG("ETD0180_SENDING_EVENT: Primary finger F0 updated, sending touch data\n");
-        sendTouchData();
-    } else {
-        DEBUG_LOG("ETD0180_SKIP_EVENT: Secondary finger F1 updated, NOT sending event\n");
-    }
-}
+// REMOVED: Dead processPacketETD0180MultiTouch() function - was designed for wrong packet system
 
 MT2FingerType ApplePS2Elan::GetBestFingerType(int i) {
     switch (i) {
@@ -2403,18 +2313,26 @@ void ApplePS2Elan::sendTouchData() {
 
     int transducers_count = 0;
     
-    // DEBUG: Log active fingers before sending
+    // DIAGNOSTIC: Check real firmware version and packet processing
+    static bool logged_once = false;
+    if (!logged_once) {
+        IOLog("ELAN_DIAGNOSTIC: fw_version=0x%06x IS_ETD0180=%s\n", info.fw_version, IS_ETD0180() ? "YES" : "NO");
+        logged_once = true;
+    }
+    
     if (IS_ETD0180()) {
         int active_count = 0;
         for (int i = 0; i < ETP_MAX_FINGERS; i++) {
             if (virtualFinger[i].touch) {
                 active_count++;
-                DEBUG_LOG("ETD0180_SEND: Finger[%d] active at X=%d Y=%d\n", 
+                IOLog("ETD0180_FINGER_ACTIVE: F%d at X=%d Y=%d\n", 
                       i, (int)virtualFinger[i].now.x, (int)virtualFinger[i].now.y);
             }
         }
-        DEBUG_LOG("ETD0180_SEND: Sending %d active fingers to VoodooInput\n", active_count);
+        IOLog("ETD0180_SENDING: %d active fingers to VoodooInput\n", active_count);
     }
+    
+    // REMOVED: Problematic gesture continuity code that caused cursor blocking
     
     // SMART CLICKPAD LOGIC: Analyze all active fingers ONCE before processing
     bool is_clickpad_pressed = false;
