@@ -10,7 +10,7 @@
 
 // generally one cannot IOLog from interrupt context, it eventually leads to kernel panic
 // but it is useful sometimes
-#if 1
+#if 0
 #define INTERRUPT_LOG(args...)  do { IOLog(args); } while (0)
 #else
 #define INTERRUPT_LOG(args...)  do { } while (0)
@@ -152,7 +152,6 @@ ApplePS2Elan *ApplePS2Elan::probe(IOService *provider, SInt32 *score) {
     DEBUG_LOG("VoodooPS2Elan: elantechQueryInfo() SUCCESS, fw=0x%06x\n", info.fw_version);
 
     DEBUG_LOG("VoodooPS2Elan: capabilities: %x %x %x\n", info.capabilities[0], info.capabilities[1], info.capabilities[2]);
-    DEBUG_LOG("VoodooPS2Elan: samples: %x %x %x\n", info.capabilities[0], info.capabilities[1], info.capabilities[2]);
     DEBUG_LOG("VoodooPS2Elan: hw_version: %x\n", info.hw_version);
     DEBUG_LOG("VoodooPS2Elan: fw_version: %x\n", info.fw_version);
     IOLog("VoodooPS2Elan: FIRMWARE_VERSION=0x%06x IS_ETD0108=%s\n", info.fw_version, IS_ETD0108() ? "YES" : "NO");
@@ -359,7 +358,7 @@ void ApplePS2Elan::setParamPropertiesGated(OSDictionary *config) {
         {"TrackpointDividerY",                 &_trackpointDividerY},
         {"TrackpointScrollMultiplierX",        &_trackpointScrollMultiplierX},
         {"TrackpointScrollMultiplierY",        &_trackpointScrollMultiplierY},
-        {"TrackpointScrollDividerY",           &_trackpointScrollDividerX},
+        {"TrackpointScrollDividerX",           &_trackpointScrollDividerX},
         {"TrackpointScrollDividerY",           &_trackpointScrollDividerY},
         {"MouseResolution",                    &_mouseResolution},
         {"MouseSampleRate",                    &_mouseSampleRate},
@@ -1086,13 +1085,13 @@ int ApplePS2Elan::elantechSetInputParams() {
     UInt32 physical_max_x = (info.x_max - info.x_min + 1) * 100 / info.x_res;
     UInt32 physical_max_y = (info.y_max - info.y_min + 1) * 100 / info.y_res;
     
-    // CLOSER TO 5: Moving closer to Resolution 5 for less lag
-    // Resolution 5 → 81920 → VoodooInput sees 16384 (0x4000)
-    // 25000 is closer to 16384 = less laggy, closer to Resolution 5 feel
+    // 16-BIT WORKAROUND: VoodooInput has limitations with certain resolutions
+    // Resolution 5 works, Resolution 6 fails, but Resolution 7+ works
+    // 17000 is a carefully chosen 16-bit safe value that bypasses res=6 issues
     if (info.x_res == 6) {
-        physical_max_x = 17000;  // 16-bit safe, fine-tuned resolution  
-        physical_max_y = 17000;  // Keep proportional  
-        DEBUG_LOG("ELAN_16BIT_FINETUNED: Using 17000 - 16-bit safe, fine-tuned resolution\n");
+        physical_max_x = 17000;  // 16-bit workaround for VoodooInput res=6 limitation
+        physical_max_y = 17000;  // Keep proportional to avoid distortion
+        DEBUG_LOG("ELAN_16BIT_WORKAROUND: Using 17000 - VoodooInput res=6 bypass\n");
     }
     
     setProperty(VOODOO_INPUT_PHYSICAL_MAX_X_KEY, physical_max_x, 32);
@@ -1102,9 +1101,9 @@ int ApplePS2Elan::elantechSetInputParams() {
           info.x_res, physical_max_x, physical_max_y);
     
     // Log button area configuration for calibration debugging
-    UInt32 button_area_threshold = info.y_max - 100;
+    UInt32 button_area_threshold = info.y_max - 400;
     DEBUG_LOG("ELAN_BUTTON_AREA_CONFIG: Trackpad X=%d Y=%d, Button area threshold=%d (bottom %d units)\n", 
-          info.x_max, info.y_max, button_area_threshold, 100);
+          info.x_max, info.y_max, button_area_threshold, 400);
 
     setProperty(VOODOO_INPUT_TRANSFORM_KEY, 0ull, 32);
     setProperty("VoodooInputSupported", kOSBooleanTrue);
@@ -1558,10 +1557,11 @@ void ApplePS2Elan::elantechRescale(unsigned int &x, unsigned int &y) {
         UInt32 physical_max_x = (info.x_max - info.x_min + 1) * 100 / info.x_res;
         UInt32 physical_max_y = (info.y_max - info.y_min + 1) * 100 / info.y_res;
         
-        // OPTIMAL: Resolution 5.8 equivalent - creates VoodooInput-friendly dimension value 70620
+        // 16-BIT WORKAROUND: Alternative value for VoodooInput res=6 limitation
+        // Same issue as above - Resolution 6 fails, using calculated equivalent value
         if (info.x_res == 6) {
-            physical_max_x = 70620;  // Resolution 5.8 equivalent: 4096*100/5.8 = 70620
-            physical_max_y = 70620;  // Keep proportional
+            physical_max_x = 70620;  // 16-bit workaround: Resolution 5.8 equivalent (4096*100/5.8)
+            physical_max_y = 70620;  // Keep proportional to avoid distortion
         }
         
         setProperty(VOODOO_INPUT_PHYSICAL_MAX_X_KEY, physical_max_x, 32);
@@ -1974,11 +1974,7 @@ void ApplePS2Elan::elantechReportAbsoluteV3(int packetType) {
 
 void ApplePS2Elan::elantechReportAbsoluteV4(int packetType) {
     if (IS_ETD0108()) {
-        if (IS_ETD0108()) {
         DEBUG_LOG("[ETD0108_PROCESS] PacketType=%d\n", packetType);
-    } else {
-        DEBUG_LOG("ETD0108: type=%d (0=STATUS 1=HEAD 2=MOTION)\n", packetType);
-    }
     }
     
     switch (packetType) {
@@ -2399,8 +2395,8 @@ void ApplePS2Elan::sendTouchData() {
         transducer.currentCoordinates = state.now;
         transducer.previousCoordinates = state.prev;
         
-        // Convert uint64_t to AbsoluteTime - use reinterpret_cast for compatibility
-        transducer.timestamp = *reinterpret_cast<AbsoluteTime*>(&timestamp);
+        // Convert uint64_t to AbsoluteTime - use bcopy for safe type conversion
+        bcopy(&timestamp, &transducer.timestamp, sizeof(AbsoluteTime));
 
         transducer.isValid = true;
         
@@ -2503,8 +2499,8 @@ void ApplePS2Elan::sendTouchData() {
 
     inputEvent.contact_count = transducers_count;
     
-    // Convert uint64_t to AbsoluteTime - use reinterpret_cast for compatibility
-    inputEvent.timestamp = *reinterpret_cast<AbsoluteTime*>(&timestamp);
+    // Convert uint64_t to AbsoluteTime - use bcopy for safe type conversion
+    bcopy(&timestamp, &inputEvent.timestamp, sizeof(AbsoluteTime));
 
     if (voodooInputInstance) {
         super::messageClient(kIOMessageVoodooInputMessage, voodooInputInstance, &inputEvent, sizeof(VoodooInputEvent));
@@ -2540,8 +2536,8 @@ void ApplePS2Elan::sendTouchData() {
         }
         
         if (send) {
-            // Convert uint64_t to AbsoluteTime - use reinterpret_cast for compatibility
-            trackpointReport.timestamp = *reinterpret_cast<AbsoluteTime*>(&timestamp);
+            // Convert uint64_t to AbsoluteTime - use bcopy for safe type conversion
+            bcopy(&timestamp, &trackpointReport.timestamp, sizeof(AbsoluteTime));
             trackpointReport.buttons = processedButtons;
             trackpointReport.dx = trackpointReport.dy = 0;
             super::messageClient(kIOMessageVoodooTrackpointMessage, voodooInputInstance,
@@ -2689,7 +2685,7 @@ void ApplePS2Elan::onButtonTimer(void) {
 
 // Check if any finger is actively touching the trackpad
 bool ApplePS2Elan::isAnyFingerActive(void) {
-    for (int i = 0; i < 5; i++) {
+    for (int i = 0; i < ETP_MAX_FINGERS; i++) {
         if (virtualFinger[i].touch) {
             // Log any active finger position for debugging  
             DEBUG_LOG("VoodooPS2Elan: ACTIVE_FINGER_DETECTED: F%d at X=%d Y=%d (trackpad_max=%dx%d)\n", 
