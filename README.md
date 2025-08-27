@@ -4,7 +4,7 @@ A specialized VoodooPS2 kernel extension that provides comprehensive support for
 
 ## 🎯 Purpose
 
-This driver was created to solve the persistent issues with ELAN trackpads on older laptops running macOS, particularly the ETD0180 chipset. The standard ApplePS2SmartTouchpad driver proved unreliable and buggy, failing to provide basic functionality like edge detection for macOS gestures and proper button area mapping.
+This driver was created to solve the persistent issues with ELAN trackpads on older laptops running macOS, particularly the ETD0108 chipset. The standard ApplePS2SmartTouchpad driver proved unreliable and buggy, failing to provide basic functionality like edge detection for macOS gestures and proper button area mapping.
 
 ## 📖 Background Story
 
@@ -12,11 +12,11 @@ This project was born out of necessity - developed over 4 weeks to restore prope
 
 ## ✨ Key Features
 
-### 🎯 ETD0180 Chipset Support
+### 🎯 ETD0108 Chipset Support
 - **Multi-touch Edge Detection**: Proper edge swipe recognition for macOS Notification Center and other system gestures
 - **Hardware-to-Logical Coordinate Mapping**: Seamless translation between trackpad hardware coordinates and macOS logical coordinates
 - **Y-Coordinate Inversion**: Correct coordinate orientation for natural gesture recognition
-- **Firmware Support**: Optimized for ETD0180 firmware version 0x381f17
+- **Firmware Support**: Optimized for ETD0108 firmware version 0x381f17
 
 ### 🖱️ Advanced Clickpad Functionality
 - **Three-Zone Button Areas**: Intelligent left, right, and middle-click detection based on finger position
@@ -54,12 +54,12 @@ This project was born out of necessity - developed over 4 weeks to restore prope
 ## 📋 Compatibility
 
 ### Supported Hardware
-- **Primary**: ELAN ETD0180 Touchpad (Firmware 0x381f17)
+- **Primary**: ELAN ETD0108 Touchpad (Firmware 0x381f17)
 - **Architecture**: x86_64 Intel-based Macs
 - **Bootloader**: OpenCore (recommended)
 
 ### Important Technical Note
-**ETD0180 Packet Format**: This specific ELAN version uses a different packet format compared to standard v4 protocol. The driver includes a mandatory patch (already active in source code) to operate the trackpad in absolute mode instead of relative mode. This patch is essential for proper multi-touch functionality and coordinate reporting.
+**ETD0108 Packet Format**: This specific ELAN version uses a different packet format compared to standard v4 protocol. The driver includes a mandatory patch (already active in source code) to operate the trackpad in absolute mode instead of relative mode. This patch is essential for proper multi-touch functionality and coordinate reporting.
 
 ### System Requirements
 - macOS 10.10+ (Yosemite and later)
@@ -108,7 +108,7 @@ The driver has been extensively tested and provides reliable daily-use functiona
 - **Wrong Click Areas**: Check coordinate logging in Console for calibration
 
 ### Debug Information
-Enable debug logging in Console and filter for "ETD0180" to see real-time coordinate and event information.
+Enable debug logging in Console and filter for "ETD0108" to see real-time coordinate and event information.
 
 ## 🤝 Contributing
 
