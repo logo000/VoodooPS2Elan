@@ -34,6 +34,15 @@
 #include "VoodooInputMultitouch/VoodooInputMessages.h"
 
 // =============================================================================
+// Minimal drag continuity support
+//
+
+// Saved finger positions for drag continuity
+static bool __finger_saved[ETP_MAX_FINGERS] = {false, false, false, false, false};
+static unsigned int __saved_x[ETP_MAX_FINGERS] = {0, 0, 0, 0, 0};
+static unsigned int __saved_y[ETP_MAX_FINGERS] = {0, 0, 0, 0, 0};
+
+// =============================================================================
 // ApplePS2Elan Class Implementation
 //
 
@@ -2080,9 +2089,16 @@ void ApplePS2Elan::processPacketStatusV4() {
             return;
         }
         
-        // ETD0108 FIX: Skip buggy finger counting - let HEAD packets handle it directly
-        DEBUG_LOG("ETD0108_STATUS_FIXED: Skipping heldFingers logic - HEAD packets will handle finger counting\n");
-        return;
+        // ETD0108 FIX: Button-based STATUS processing  
+        // Drag needs button press - gestures don't use buttons
+        if (leftButton || rightButton) {
+            // Button pressed: process STATUS for drag continuity
+            DEBUG_LOG("ETD0108_STATUS_FIXED: Button pressed - processing STATUS for drag continuity\n");
+        } else {
+            // No button: bypass STATUS for reliable gestures
+            DEBUG_LOG("ETD0108_STATUS_FIXED: No button - bypassing STATUS for reliable gestures\n");
+            return;
+        }
     }
 
     // notify finger state change
@@ -2102,6 +2118,15 @@ void ApplePS2Elan::processPacketStatusV4() {
             // finger has been lifted off the touchpad
             if (virtualFinger[i].touch) {
                 DEBUG_LOG("VoodooPS2Elan: %d finger has been lifted off the touchpad\n", i);
+                
+                // DRAG_SAVE: Save finger position if drag is active
+                if (leftButton || rightButton) {
+                    __finger_saved[i] = true;
+                    __saved_x[i] = virtualFinger[i].now.x;
+                    __saved_y[i] = virtualFinger[i].now.y;
+                    IOLog("VoodooPS2Elan: DRAG_SAVE F%d at (%u,%u) - button pressed\n", i, 
+                          __saved_x[i], __saved_y[i]);
+                }
             }
             virtualFinger[i].touch = false;
         } else {
@@ -2112,11 +2137,14 @@ void ApplePS2Elan::processPacketStatusV4() {
     
     // DEBUG: Log final finger count for ETD0108
     if (IS_ETD0108()) {
-        DEBUG_LOG("ETD0108_STATUS_DEBUG: Final count=%d (heldFingers will be set to this)\n", count);
+        DEBUG_LOG("ETD0108_STATUS_DEBUG: Final count=%d (1-2 fingers processed normally)\n", count);
+        // For 1-2 fingers: process normally like other hardware
+        heldFingers = count;
+        headPacketsCount = 0;
+    } else {
+        heldFingers = count;
+        headPacketsCount = 0;
     }
-
-    heldFingers = count;
-    headPacketsCount = 0;
     
     // if count > 0, we wait for HEAD packets to report so that we report all fingers at once.
     // if count == 0, we have to report the fact fingers are taken off, because there won't be any HEAD packets
@@ -2158,6 +2186,17 @@ void ApplePS2Elan::processPacketHeadV4() {
 
     leftButton = packet[0] & 0x1;
     rightButton = packet[0] & 0x2;
+    
+    // Clear saved positions if no buttons pressed
+    if (!leftButton && !rightButton) {
+        for (int i = 0; i < ETP_MAX_FINGERS; i++) {
+            if (__finger_saved[i]) {
+                __finger_saved[i] = false;
+                IOLog("VoodooPS2Elan: HEAD cleared saved F%d (buttons released)\n", i);
+            }
+        }
+    }
+    
     headPacketsCount++;
     
     // Validate finger ID
@@ -2202,6 +2241,15 @@ void ApplePS2Elan::processPacketHeadV4() {
 
     virtualFinger[id].now.x = x;
     virtualFinger[id].now.y = y;
+    
+    // DRAG_RESTORE: Restore saved position if finger reappears during drag
+    if ((leftButton || rightButton) && __finger_saved[id]) {
+        virtualFinger[id].prev.x = __saved_x[id];
+        virtualFinger[id].prev.y = __saved_y[id];
+        __finger_saved[id] = false;  // Clear after restoring
+        IOLog("VoodooPS2Elan: DRAG_RESTORE F%d prev=(%u,%u) now=(%d,%d) - smooth continuity\n", 
+              id, __saved_x[id], __saved_y[id], x, y);
+    }
     
     // REMOVED EDGE DETECTION: VoodooInput handles this natively with correct dimensions
 
