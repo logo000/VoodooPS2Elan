@@ -927,13 +927,6 @@ int ApplePS2Elan::elantechQueryInfo() {
             DEBUG_LOG("VoodooPS2Elan: failed to query resolution data.\n");
         }
         
-        // ETD0108 BALANCED RESOLUTION: Optimal balance between smoothness and responsiveness
-        if (IS_ETD0108()) {  // ETD0108
-            info.x_res = 6;   // TEST: Resolution 6 with Resolution 5 dimensions to isolate the problem
-            info.y_res = 6;   // TEST: Resolution 6 with Resolution 5 dimensions to isolate the problem
-            DEBUG_LOG("ETD0108_FIX: Balanced resolution x_res=%d y_res=%d for optimal smoothness + responsiveness\n", 
-                  info.x_res, info.y_res);
-        }
     }
 
     // query range information
@@ -1089,19 +1082,8 @@ int ApplePS2Elan::elantechSetInputParams() {
     setProperty(VOODOO_INPUT_LOGICAL_MAX_X_KEY, info.x_max - info.x_min, 32);
     setProperty(VOODOO_INPUT_LOGICAL_MAX_Y_KEY, info.y_max - info.y_min, 32);
 
-    // EXPERIMENTAL: Test if Resolution 6 problem is caused by the physical dimension value 68266
-    // Normal calculation would be: (info.x_max - info.x_min + 1) * 100 / info.x_res
     UInt32 physical_max_x = (info.x_max - info.x_min + 1) * 100 / info.x_res;
     UInt32 physical_max_y = (info.y_max - info.y_min + 1) * 100 / info.y_res;
-    
-    // 16-BIT WORKAROUND: VoodooInput has limitations with certain resolutions
-    // Resolution 5 works, Resolution 6 fails, but Resolution 7+ works
-    // 17000 is a carefully chosen 16-bit safe value that bypasses res=6 issues
-    if (info.x_res == 6) {
-        physical_max_x = 17000;  // 16-bit workaround for VoodooInput res=6 limitation
-        physical_max_y = 17000;  // Keep proportional to avoid distortion
-        DEBUG_LOG("ELAN_16BIT_WORKAROUND: Using 17000 - VoodooInput res=6 bypass\n");
-    }
     
     setProperty(VOODOO_INPUT_PHYSICAL_MAX_X_KEY, physical_max_x, 32);
     setProperty(VOODOO_INPUT_PHYSICAL_MAX_Y_KEY, physical_max_y, 32);
@@ -1562,16 +1544,8 @@ void ApplePS2Elan::elantechRescale(unsigned int &x, unsigned int &y) {
         setProperty(VOODOO_INPUT_LOGICAL_MAX_X_KEY, info.x_max - info.x_min, 32);
         setProperty(VOODOO_INPUT_LOGICAL_MAX_Y_KEY, info.y_max - info.y_min, 32);
 
-        // EXPERIMENTAL: Test if Resolution 6 problem is caused by the physical dimension value 68266
         UInt32 physical_max_x = (info.x_max - info.x_min + 1) * 100 / info.x_res;
         UInt32 physical_max_y = (info.y_max - info.y_min + 1) * 100 / info.y_res;
-        
-        // 16-BIT WORKAROUND: Alternative value for VoodooInput res=6 limitation
-        // Same issue as above - Resolution 6 fails, using calculated equivalent value
-        if (info.x_res == 6) {
-            physical_max_x = 70620;  // 16-bit workaround: Resolution 5.8 equivalent (4096*100/5.8)
-            physical_max_y = 70620;  // Keep proportional to avoid distortion
-        }
         
         setProperty(VOODOO_INPUT_PHYSICAL_MAX_X_KEY, physical_max_x, 32);
         setProperty(VOODOO_INPUT_PHYSICAL_MAX_Y_KEY, physical_max_y, 32);
